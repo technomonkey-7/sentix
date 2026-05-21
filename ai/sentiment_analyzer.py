@@ -159,13 +159,20 @@ def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_ov
     if not candidates:
         return []
 
+    live_mode = get_config("live_mode", "false").lower() == "true"
+
     try:
         test_client = get_gemini_client()
     except Exception as e:
         log_event("ERROR", "AI_MODULE", f"Failed to get Gemini client: {e}")
+        if live_mode:
+            raise RuntimeError(f"LIVE MODE: Failed to configure Gemini client: {e}")
         test_client = None
 
     if test_client is None:
+        if live_mode:
+            log_event("ERROR", "AI_MODULE", "Gemini client is not configured in LIVE MODE. Refusing simulation fallback.")
+            raise RuntimeError("LIVE MODE: No Gemini client configured. Gemini API key might be missing or invalid.")
         log_event("WARNING", "AI_MODULE", "No Gemini client configured. Running simulated fallbacks for all candidates.")
         results = []
         for c in candidates:
@@ -243,6 +250,9 @@ def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_ov
             
         log_event("SUCCESS", "AI_MODULE", "Step 1 Complete. News summarized successfully.")
     except Exception as e:
+        if live_mode:
+            log_event("ERROR", "AI_MODULE", f"Batch summarization failed in LIVE MODE: {e}. Refusing simulation/placeholder fallback.")
+            raise RuntimeError(f"LIVE MODE: Batch summarization failed: {e}")
         log_event("ERROR", "AI_MODULE", f"Batch summarization failed: {e}. Falling back to individual placeholder digests.")
         for c in valid_candidates:
             digest_map[c["symbol"]] = f"Summarization failed: {e}"
@@ -318,6 +328,9 @@ def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_ov
         return results
         
     except Exception as e:
+        if live_mode:
+            log_event("ERROR", "AI_MODULE", f"Batch sentiment scoring failed in LIVE MODE: {e}. Refusing simulation fallback.")
+            raise RuntimeError(f"LIVE MODE: Batch sentiment scoring failed: {e}")
         log_event("ERROR", "AI_MODULE", f"Batch sentiment scoring failed: {e}. Falling back to simulation.")
         for c in valid_candidates:
             symbol = c["symbol"]

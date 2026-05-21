@@ -173,11 +173,17 @@ class TestSentixOptimization(unittest.TestCase):
     # ==========================================
     # 3. STRUCTURED BATCH SENTIMENT ANALYSIS
     # ==========================================
+    @patch('ai.sentiment_analyzer.get_config')
     @patch('ai.sentiment_analyzer.load_api_keys')
     @patch('ai.sentiment_analyzer.save_ai_run')
     @patch('google.genai.Client')
-    def test_analyze_sentiment_batch_success(self, mock_client_class, mock_save_ai_run, mock_load_keys):
-        # Mock load_api_keys to enable client creation
+    def test_analyze_sentiment_batch_success(self, mock_client_class, mock_save_ai_run, mock_load_keys, mock_get_config):
+        # Mock get_config for models and live_mode
+        mock_get_config.side_effect = lambda key, default=None: "false" if key == "live_mode" else (
+            "gemini-3.1-flash-lite" if key == "summarizer_model" else (
+                "gemini-3.5-flash" if key == "sentiment_model" else default
+            )
+        )
         mock_load_keys.return_value = ["TEST_KEY"]
         
         # Mock Gemini Client and generator response
@@ -231,9 +237,12 @@ class TestSentixOptimization(unittest.TestCase):
         # Ensure database audit log was called
         self.assertEqual(mock_save_ai_run.call_count, 2)
 
+    @patch('ai.sentiment_analyzer.get_config')
     @patch('ai.sentiment_analyzer.get_gemini_client')
     @patch('ai.sentiment_analyzer.save_ai_run')
-    def test_analyze_sentiment_batch_fallback_on_client_failure(self, mock_save_ai_run, mock_get_client):
+    def test_analyze_sentiment_batch_fallback_on_client_failure(self, mock_save_ai_run, mock_get_client, mock_get_config):
+        # Force live_mode to false
+        mock_get_config.side_effect = lambda key, default=None: "false" if key == "live_mode" else default
         # Force client connection failure to trigger simulation path
         mock_get_client.return_value = None
         
@@ -255,6 +264,57 @@ class TestSentixOptimization(unittest.TestCase):
         self.assertEqual(results[1]["symbol"], "ETH/USDT")
         self.assertTrue(results[1]["sentiment_score"] <= -3) # Negative keywords match
         self.assertIn("Simulated", results[1]["reason"])
+
+    @patch('ai.sentiment_analyzer.get_config')
+    @patch('ai.sentiment_analyzer.get_gemini_client')
+    def test_analyze_sentiment_batch_live_mode_refuses_fallback_on_client_failure(self, mock_get_client, mock_get_config):
+        # Mock live_mode to "true"
+        mock_get_config.side_effect = lambda key, default=None: "true" if key == "live_mode" else default
+        # Force client connection failure to trigger client is None check
+        mock_get_client.return_value = None
+        
+        candidates = [
+            {"symbol": "BTC/USDT", "news_items": [{"title": "Bitcoin surges", "description": "ETF inflows"}]}
+        ]
+        
+        with self.assertRaises(RuntimeError) as context:
+            analyze_sentiment_batch(candidates)
+            
+        self.assertIn("LIVE MODE: No Gemini client configured", str(context.exception))
+
+    @patch('ai.sentiment_analyzer.get_config')
+    @patch('ai.sentiment_analyzer.load_api_keys')
+    @patch('google.genai.Client')
+    def test_analyze_sentiment_batch_live_mode_refuses_fallback_on_api_failure(self, mock_client_class, mock_load_keys, mock_get_config):
+        # Mock live_mode to "true"
+        mock_get_config.side_effect = lambda key, default=None: "true" if key == "live_mode" else (
+            "gemini-3.1-flash-lite" if key == "summarizer_model" else (
+                "gemini-3.5-flash" if key == "sentiment_model" else default
+            )
+        )
+        mock_load_keys.return_value = ["TEST_KEY"]
+        
+        # Mock Client to raise an exception on Step 2 (scoring)
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        
+        # Step 1 (summarizer) succeeds
+        mock_resp_step1 = MagicMock()
+        mock_resp_step1.text = json.dumps({
+            "digests": [{"symbol": "BTC/USDT", "digest": "Mocked digest"}]
+        })
+        
+        # Step 2 raises exception
+        mock_client.models.generate_content.side_effect = [mock_resp_step1, ValueError("API quota exceeded")]
+        
+        candidates = [
+            {"symbol": "BTC/USDT", "news_items": [{"title": "Bitcoin surges", "description": "ETF inflows"}]}
+        ]
+        
+        with self.assertRaises(RuntimeError) as context:
+            analyze_sentiment_batch(candidates)
+            
+        self.assertIn("LIVE MODE: Batch sentiment scoring failed", str(context.exception))
 
 if __name__ == '__main__':
     unittest.main()
