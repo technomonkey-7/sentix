@@ -1,6 +1,6 @@
 ccxt>=4.1.0
 pandas>=2.0.0
-pandas-ta>=0.3.14b0
+pandas-ta
 streamlit>=1.30.0
 plotly>=5.18.0
 google-genai>=1.0.0
