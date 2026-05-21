@@ -265,7 +265,7 @@ def close_active_position(asset, sell_price, trade_type, reason=None):
     buy_amount = active_pos['amount']
     
     # Calculate P&L %: (sell_price - buy_price) / buy_price * 100
-    pnl_pct = ((sell_price - buy_price) / buy_price) * 100
+    pnl_pct = ((sell_price - buy_price) / buy_price) * 100 if buy_price > 0 else 0.0
     
     conn = get_connection()
     cursor = conn.cursor()

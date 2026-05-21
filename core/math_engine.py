@@ -76,7 +76,7 @@ def check_triggers(df):
     # Check Bullish (BUY) triggers
     # 1. MACD Bullish Cross: MACD line crosses above Signal line
     # Added threshold: crossover difference must be at least 0.005% of price to filter out flat-market noise
-    macd_diff_pct = ((macd_c - sig_c) / close_c) * 100
+    macd_diff_pct = ((macd_c - sig_c) / close_c) * 100 if close_c > 0 else 0.0
     macd_bullish_cross = (macd_p <= sig_p) and (macd_c > sig_c) and (macd_diff_pct >= 0.005)
     
     # 2. RSI Oversold recovery: RSI crosses back above 30, or enters oversold zone
@@ -89,7 +89,7 @@ def check_triggers(df):
     # Check Bearish (SELL) triggers
     # 1. MACD Bearish Cross: MACD line crosses below Signal line
     # Added threshold: crossover difference must be at least 0.005% of price
-    macd_bearish_diff_pct = ((sig_c - macd_c) / close_c) * 100
+    macd_bearish_diff_pct = ((sig_c - macd_c) / close_c) * 100 if close_c > 0 else 0.0
     macd_bearish_cross = (macd_p >= sig_p) and (macd_c < sig_c) and (macd_bearish_diff_pct >= 0.005)
     
     # 2. RSI Overbought exit: RSI crosses above 70, or falls back below 70

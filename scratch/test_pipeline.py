@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-from core.math_engine import confirm_with_higher_tf
+from core.math_engine import confirm_with_higher_tf, check_triggers
 import ai.sentiment_analyzer as sa
 from ai.sentiment_analyzer import (
     DigestResult,
@@ -29,6 +29,32 @@ class TestSentixOptimization(unittest.TestCase):
     # ==========================================
     # 1. MATH ENGINE DOUBLE-CHECK TESTS
     # ==========================================
+    def test_check_triggers_zero_close(self):
+        # Create a DataFrame where the close price is 0 (should not raise ZeroDivisionError)
+        df = pd.DataFrame({
+            'close': [100.0, 100.0, 0.0, 0.0, 0.0],
+            'ema': [100.0, 100.0, 100.0, 100.0, 100.0],
+            'rsi': [50.0, 50.0, 50.0, 50.0, 50.0],
+            'macd': [0.0, 0.0, 1.0, 1.5, 2.0],
+            'macd_signal': [0.0, 0.0, 1.2, 1.3, 1.4]
+        })
+        trigger, reason = check_triggers(df)
+        self.assertIsNone(trigger)
+
+    def test_check_triggers_macd_bullish_cross(self):
+        # Previous completed candle: macd_p <= sig_p
+        # Current completed candle: macd_c > sig_c
+        df = pd.DataFrame({
+            'close': [100.0] * 5,
+            'ema': [100.0] * 5,
+            'rsi': [50.0] * 5,
+            'macd': [0.0, 0.0, 1.0, 1.5, 2.0],
+            'macd_signal': [0.0, 0.0, 1.2, 1.3, 1.4]
+        })
+        trigger, reason = check_triggers(df)
+        self.assertEqual(trigger, "BUY")
+        self.assertIn("MACD Bullish Cross", reason)
+
     def test_confirm_with_higher_tf_buy_bullish_and_volume(self):
         # BUY: 4h trend is bullish (Close > EMA), 1h volume is expanding
         # Index -2 is the completed candle. Volume at -2 must be high.
