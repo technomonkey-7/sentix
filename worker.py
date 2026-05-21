@@ -19,10 +19,13 @@ load_dotenv()
 # Shared exchange instance for real-time price lookups
 _exchange = None
 def _get_exchange():
-    """Returns a shared ccxt Binance exchange instance."""
+    """Returns a shared configured ccxt exchange instance."""
     global _exchange
     if _exchange is None:
-        _exchange = ccxt.binance({
+        from core.config import get_config
+        exchange_name = get_config("exchange_name") or os.getenv("EXCHANGE_NAME", "binance")
+        exchange_class = getattr(ccxt, exchange_name.lower(), ccxt.binance)
+        _exchange = exchange_class({
             'enableRateLimit': True,
             'options': {'defaultType': 'spot'}
         })

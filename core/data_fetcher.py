@@ -1,4 +1,5 @@
 import ccxt
+import os
 import pandas as pd
 import requests
 import xml.etree.ElementTree as ET
@@ -18,8 +19,10 @@ def fetch_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=100):
     
     try:
         log_event("INFO", "DATA_FETCHER", f"Fetching {limit} candles for {symbol} ({timeframe}) from CCXT...")
-        # Clean symbol to make sure it matches exchange expectation (e.g. BTC/USDT)
-        exchange = ccxt.binance({
+        # Load configured exchange dynamically to bypass geographic/provider restrictions
+        exchange_name = get_config("exchange_name") or os.getenv("EXCHANGE_NAME", "binance")
+        exchange_class = getattr(ccxt, exchange_name.lower(), ccxt.binance)
+        exchange = exchange_class({
             'enableRateLimit': True,
             'options': {'defaultType': 'spot'}
         })
