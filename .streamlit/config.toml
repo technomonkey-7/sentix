@@ -1,0 +1,4 @@
+[server]
+# Disables file watching of database/data files, which prevents Streamlit from hanging 
+# on Ctrl-C and avoids file-system lock contentions on Windows with SQLite.
+fileWatcherType = "none"

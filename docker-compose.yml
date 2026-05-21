@@ -1,0 +1,30 @@
+services:
+  ui:
+    build: .
+    container_name: sentix_ui
+    restart: always
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      worker:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8501/_stcore/health')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  worker:
+    build: .
+    container_name: sentix_worker
+    restart: always
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    command: python worker.py
