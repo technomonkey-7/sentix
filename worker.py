@@ -545,9 +545,9 @@ def main():
     if not get_config("min_ai_sentiment_threshold"):
         save_config("min_ai_sentiment_threshold", os.getenv("MIN_AI_SENTIMENT_THRESHOLD", "3"))
     if not get_config("summarizer_model"):
-        save_config("summarizer_model", os.getenv("SUMMARIZER_MODEL", "gemini-2.5-flash"))
+        save_config("summarizer_model", os.getenv("SUMMARIZER_MODEL", "gemini-3.1-flash-lite"))
     if not get_config("sentiment_model"):
-        save_config("sentiment_model", os.getenv("SENTIMENT_MODEL", "gemini-2.5-pro"))
+        save_config("sentiment_model", os.getenv("SENTIMENT_MODEL", "gemini-3.5-flash"))
     if not get_config("gemini_api_key"):
         save_config("gemini_api_key", os.getenv("GEMINI_API_KEY", ""))
     if not get_config("risk_percentage"):

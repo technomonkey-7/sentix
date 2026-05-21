@@ -40,7 +40,7 @@ T = {
         "sum_model": "Özetleme Modeli (Aşırı Token Cimrisi - Adım 1)",
         "sum_model_help": "Google News makalelerini hızlıca okuyup temiz bir piyasa özeti çıkaran Flash modeli.",
         "sent_model": "Duygu Analiz Modeli (Gelişmiş - Adım 2)",
-        "sent_model_help": "Piyasa özetine bakarak -10 ile +10 arası duygu skoru ve mantıksal açıklama üreten Pro modeli.",
+        "sent_model_help": "Piyasa özetine bakarak -10 ile +10 arası duygu skoru ve mantıksal açıklama üreten gelişmiş model.",
         "risk_pct": "NAV İşlem Büyüklüğü (Risk %)",
         "risk_pct_help": "Her bir alım emrinin toplam cüzdan büyüklüğünüze (NAV) oranı. Kasa yönetimi için %1-%5 önerilir.",
         "sl_pct": "Stop-Loss (Zarar Durdur) Oranı %",
@@ -178,7 +178,7 @@ T = {
         "sum_model": "Summarization Model (Step 1 - Token Efficient)",
         "sum_model_help": "The fast, low-cost Gemini Flash model used to clean, summarize, and digest scraped Google News articles.",
         "sent_model": "Sentiment Analysis Model (Step 2 - Advanced)",
-        "sent_model_help": "The powerful Gemini Pro model used to evaluate the news digest and output a -10 to +10 sentiment score with a logical explanation.",
+        "sent_model_help": "The advanced Gemini model used to evaluate the news digest and output a -10 to +10 sentiment score with a logical explanation.",
         "risk_pct": "NAV Trade Size (Risk %)",
         "risk_pct_help": "Size of each BUY order as a percentage of your total Net Asset Value (NAV). 1%-5% is recommended for risk safety.",
         "sl_pct": "Stop-Loss Percentage %",
@@ -1155,19 +1155,19 @@ if exchange_name_input != db_exchange:
 
 # AI Models Settings
 summarizer_model_default = os.getenv("SUMMARIZER_MODEL", "gemini-3.1-flash-lite")
-sentiment_model_default = os.getenv("SENTIMENT_MODEL", "gemini-2.5-pro")
+sentiment_model_default = os.getenv("SENTIMENT_MODEL", "gemini-3.5-flash")
 
 summarizer_model = st.sidebar.selectbox(
     t("sum_model"),
-    options=["gemini-3.1-flash-lite","gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
-    index=["gemini-3.1-flash-lite","gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"].index(get_config("summarizer_model", summarizer_model_default)),
+    options=["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
+    index=["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"].index(get_config("summarizer_model", summarizer_model_default)),
     help=t("sum_model_help")
 )
 
 sentiment_model = st.sidebar.selectbox(
     t("sent_model"),
-    options=["gemini-3.1-flash-lite","gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"],
-    index=["gemini-3.1-flash-lite","gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"].index(get_config("sentiment_model", sentiment_model_default)),
+    options=["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"],
+    index=["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"].index(get_config("sentiment_model", sentiment_model_default)),
     help=t("sent_model_help")
 )
 
@@ -1266,8 +1266,8 @@ if st.sidebar.button(t("reset_settings"), width="stretch", help=t("reset_setting
             "take_profit_pct": "6.0",       # 6% TP — 2:1 reward/risk ratio (industry standard minimum)
             "min_ai_sentiment_threshold": "3",  # Score >= 3 out of 10 — filters noise but allows moderate signals
             "fee_pct": "0.001",             # 0.1% — Binance default spot fee (VIP0 maker/taker)
-            "summarizer_model": "gemini-2.5-flash",
-            "sentiment_model": "gemini-2.5-pro",
+            "summarizer_model": "gemini-3.1-flash-lite",
+            "sentiment_model": "gemini-3.5-flash",
             "live_mode": "false",
         }
         for key, value in optimal_defaults.items():
