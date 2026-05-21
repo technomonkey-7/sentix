@@ -2,7 +2,7 @@ import time
 import os
 import math
 import ccxt
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from core.db import (
     init_db, log_event, save_candles, get_portfolio, 
@@ -106,6 +106,38 @@ def calculate_total_nav(portfolio):
     return total_nav
 
 def run_worker_cycle(force=False):
+    """
+    Wrapper to acquire database lock and prevent multiple concurrent analysis cycles.
+    """
+    lock_time_str = get_config("worker_lock_time")
+    now_utc = datetime.now(timezone.utc)
+    if lock_time_str:
+        try:
+            lock_time = datetime.fromisoformat(lock_time_str)
+            if now_utc - lock_time < timedelta(minutes=3):
+                log_event("WARNING", "WORKER", "Another analysis cycle is already in progress. Skipping execution to prevent conflicts.")
+                if force:
+                    raise RuntimeError("Başka bir analiz döngüsü şu anda aktif olarak çalışıyor. Lütfen biraz bekleyin.")
+                return
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
+            
+    try:
+        save_config("worker_lock_time", now_utc.isoformat())
+    except Exception:
+        pass
+        
+    try:
+        _execute_cycle_logic(force=force)
+    finally:
+        try:
+            save_config("worker_lock_time", "")
+        except Exception:
+            pass
+
+def _execute_cycle_logic(force=False):
     """
     Executes a single cycle of the background worker:
     1. Reads latest configurations.
