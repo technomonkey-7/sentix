@@ -75,25 +75,29 @@ def check_triggers(df):
 
     # Check Bullish (BUY) triggers
     # 1. MACD Bullish Cross: MACD line crosses above Signal line
-    macd_bullish_cross = (macd_p <= sig_p) and (macd_c > sig_c)
+    # Added threshold: crossover difference must be at least 0.005% of price to filter out flat-market noise
+    macd_diff_pct = ((macd_c - sig_c) / close_c) * 100
+    macd_bullish_cross = (macd_p <= sig_p) and (macd_c > sig_c) and (macd_diff_pct >= 0.005)
     
     # 2. RSI Oversold recovery: RSI crosses back above 30, or enters oversold zone
     rsi_oversold_cross = (rsi_p >= 30) and (rsi_c < 30)
     rsi_oversold_recovery = (rsi_p < 30) and (rsi_c >= 30)
     
-    # 3. EMA Bullish Breakout: Price crosses above EMA 20
-    ema_bullish_cross = (close_p <= ema_p) and (close_c > ema_c)
+    # 3. EMA Bullish Breakout: Price crosses above EMA 20 by at least 0.05% to confirm breakout
+    ema_bullish_cross = (close_p <= ema_p) and (close_c >= ema_c * 1.0005)
 
     # Check Bearish (SELL) triggers
     # 1. MACD Bearish Cross: MACD line crosses below Signal line
-    macd_bearish_cross = (macd_p >= sig_p) and (macd_c < sig_c)
+    # Added threshold: crossover difference must be at least 0.005% of price
+    macd_bearish_diff_pct = ((sig_c - macd_c) / close_c) * 100
+    macd_bearish_cross = (macd_p >= sig_p) and (macd_c < sig_c) and (macd_bearish_diff_pct >= 0.005)
     
     # 2. RSI Overbought exit: RSI crosses above 70, or falls back below 70
     rsi_overbought_cross = (rsi_p <= 70) and (rsi_c > 70)
     rsi_overbought_reentry = (rsi_p > 70) and (rsi_c <= 70)
     
-    # 3. EMA Bearish Breakdown: Price crosses below EMA 20
-    ema_bearish_cross = (close_p >= ema_p) and (close_c < ema_c)
+    # 3. EMA Bearish Breakdown: Price falls below EMA 20 by at least 0.05% to confirm breakdown
+    ema_bearish_cross = (close_p >= ema_p) and (close_c <= ema_c * 0.9995)
 
     # Prioritize triggers and generate descriptive text
     if macd_bullish_cross:

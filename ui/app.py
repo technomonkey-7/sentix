@@ -1229,7 +1229,7 @@ with col_action1:
     if st.button(t("sync_tick"), width="stretch", help=t("sync_tick_help")):
         with st.spinner("Processing analysis..." if st.session_state["lang"] == "EN" else "Analiz yürütülüyor..."):
             try:
-                run_worker_cycle()
+                run_worker_cycle(force=True)
                 st.toast(t("sync_success"), icon="✅")
                 time_now = datetime.now().strftime("%H:%M:%S")
                 st.success(f"Tick completed at {time_now}" if st.session_state["lang"] == "EN" else f"Tick tamamlandı: {time_now}")

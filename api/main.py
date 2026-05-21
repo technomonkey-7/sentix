@@ -74,7 +74,7 @@ def update_config_api(config: ConfigUpdate):
 
 @app.post("/api/trigger_analysis")
 def trigger_analysis(background_tasks: BackgroundTasks):
-    background_tasks.add_task(run_worker_cycle)
+    background_tasks.add_task(run_worker_cycle, force=True)
     return {"success": True, "message": "Analysis cycle triggered in background"}
 
 @app.get("/api/chart/{asset}/{interval}")

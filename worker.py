@@ -18,6 +18,7 @@ load_dotenv()
 
 # Shared exchange instance for real-time price lookups
 _exchange = None
+_last_analyzed_timestamps = {}
 def _get_exchange():
     """Returns a shared configured ccxt exchange instance."""
     global _exchange
@@ -104,7 +105,7 @@ def calculate_total_nav(portfolio):
             total_nav += balance * current_price
     return total_nav
 
-def run_worker_cycle():
+def run_worker_cycle(force=False):
     """
     Executes a single cycle of the background worker:
     1. Reads latest configurations.
@@ -186,6 +187,16 @@ def run_worker_cycle():
             # Extract latest close price AND fetch real-time price for SL/TP
             completed_candle = candles_df.iloc[-2]
             candle_close_price = float(completed_candle["close"]) # For indicator analysis
+            completed_timestamp = completed_candle["timestamp"]
+            
+            # Check if we have already analyzed this completed candle
+            global _last_analyzed_timestamps
+            if not force and _last_analyzed_timestamps.get(asset) == completed_timestamp:
+                log_event("INFO", "WORKER", f"{asset}: Candle at {completed_timestamp} already analyzed. Skipping trade decisions.")
+                continue
+                
+            # Set to analyzed. If an exception occurs, we reset it in the except block.
+            _last_analyzed_timestamps[asset] = completed_timestamp
             
             # Use real-time ticker price for SL/TP monitoring (more accurate than stale candle)
             realtime_price = fetch_realtime_price(asset)
@@ -405,6 +416,9 @@ def run_worker_cycle():
                 
         except Exception as asset_err:
             log_event("ERROR", "WORKER", f"Error evaluating {asset} inside tick cycle: {asset_err}")
+            # Reset analyzed timestamp so we can retry on next tick
+            if asset in _last_analyzed_timestamps:
+                _last_analyzed_timestamps[asset] = None
             import traceback
             traceback.print_exc()
             
