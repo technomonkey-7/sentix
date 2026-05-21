@@ -26,7 +26,7 @@ def get_gemini_client(api_key=None):
         log_event("ERROR", "AI_MODULE", f"Failed to configure Gemini client: {e}")
         return None
 
-def analyze_sentiment(symbol="BTC/USDT", news_items=None):
+def analyze_sentiment(symbol="BTC/USDT", news_items=None, sentiment_model_override=None):
     """
     Main entry point for Gemini-based sentiment analysis.
     Uses a hybrid two-step model approach to optimize costs and output high-quality JSON.
@@ -37,7 +37,7 @@ def analyze_sentiment(symbol="BTC/USDT", news_items=None):
 
     # Fetch models from config or env, with fallback defaults
     summarizer_model = get_config("summarizer_model") or os.getenv("SUMMARIZER_MODEL", "gemini-3.1-flash-lite")
-    sentiment_model = get_config("sentiment_model") or os.getenv("SENTIMENT_MODEL", "gemini-3.5-flash")
+    sentiment_model = sentiment_model_override or get_config("sentiment_model") or os.getenv("SENTIMENT_MODEL", "gemini-3.5-flash")
 
     client = get_gemini_client()
     

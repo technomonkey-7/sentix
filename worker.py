@@ -19,6 +19,7 @@ load_dotenv()
 # Shared exchange instance for real-time price lookups
 _exchange = None
 _last_analyzed_timestamps = {}
+_last_ai_check_times = {}
 def _get_exchange():
     """Returns a shared configured ccxt exchange instance."""
     global _exchange
@@ -221,15 +222,6 @@ def _execute_cycle_logic(force=False):
             candle_close_price = float(completed_candle["close"]) # For indicator analysis
             completed_timestamp = completed_candle["timestamp"]
             
-            # Check if we have already analyzed this completed candle
-            global _last_analyzed_timestamps
-            if not force and _last_analyzed_timestamps.get(asset) == completed_timestamp:
-                log_event("INFO", "WORKER", f"{asset}: Candle at {completed_timestamp} already analyzed. Skipping trade decisions.")
-                continue
-                
-            # Set to analyzed. If an exception occurs, we reset it in the except block.
-            _last_analyzed_timestamps[asset] = completed_timestamp
-            
             # Use real-time ticker price for SL/TP monitoring (more accurate than stale candle)
             realtime_price = fetch_realtime_price(asset)
             current_price = realtime_price if realtime_price else candle_close_price
@@ -316,15 +308,49 @@ def _execute_cycle_logic(force=False):
             # Check for deterministic crossover triggers
             trigger_side, trigger_reason = check_triggers(candles_df)
             
+            global _last_analyzed_timestamps, _last_ai_check_times
+            already_analyzed = (not force and _last_analyzed_timestamps.get(asset) == completed_timestamp)
+            
+            is_cooldown_recheck = False
+            model_override = None
+            
+            # Fresh portfolio state (we will read it here for checks)
+            portfolio = get_portfolio()
+            total_nav = calculate_total_nav(portfolio)
+            usd_balance = portfolio.get("USD", {}).get("balance", 0.0)
+            asset_ticker = asset.split("/")[0]
+            asset_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
+            
+            if already_analyzed:
+                if trigger_side:
+                    can_act = False
+                    if trigger_side == "BUY" and not active_pos and usd_balance >= 10.0:
+                        can_act = True
+                    elif trigger_side == "SELL" and (asset_balance > 0.0001 or active_pos):
+                        can_act = True
+                        
+                    if can_act:
+                        last_ai_time = _last_ai_check_times.get(asset, 0)
+                        elapsed_since_ai = time.time() - last_ai_time
+                        if last_ai_time == 0:
+                            is_cooldown_recheck = True
+                            log_event("INFO", "WORKER", f"{asset}: Candle {completed_timestamp} was already analyzed, but active trigger {trigger_side} exists and Gemini has not been called yet. Running first sentiment check.")
+                        elif elapsed_since_ai >= 1200: # 20 minutes (1200 seconds)
+                            is_cooldown_recheck = True
+                            model_override = "gemini-3.1-flash-lite"
+                            log_event("INFO", "WORKER", f"{asset}: Candle {completed_timestamp} was already analyzed, but active trigger {trigger_side} exists. Cooldown elapsed ({elapsed_since_ai:.0f}s >= 1200s). Re-checking sentiment using '{model_override}' to avoid rate limits.")
+                
+                if not is_cooldown_recheck:
+                    log_event("INFO", "WORKER", f"{asset}: Candle at {completed_timestamp} already analyzed. Skipping trade decisions.")
+                    continue
+            else:
+                _last_ai_check_times[asset] = 0
+                
+            # Set this completed candle timestamp to analyzed
+            _last_analyzed_timestamps[asset] = completed_timestamp
+            
             if trigger_side:
                 log_event("WARNING", "WORKER", f"💥 Technical [{trigger_side}] Trigger detected for {asset}! Reason: {trigger_reason}")
-                
-                # RACE CONDITION FIX: Re-read fresh portfolio state before trade decisions
-                portfolio = get_portfolio()
-                total_nav = calculate_total_nav(portfolio)
-                usd_balance = portfolio.get("USD", {}).get("balance", 0.0)
-                asset_ticker = asset.split("/")[0]
-                asset_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
                 
                 if trigger_side == "BUY" and usd_balance < 10.0:
                     log_event("INFO", "WORKER", f"Insufficient USD balance (${usd_balance:.2f}) to perform BUY on {asset}. Skipping Gemini call.")
@@ -341,10 +367,13 @@ def _execute_cycle_logic(force=False):
                 # STEP 2 & 3: Conditional AI news sentiment verification
                 log_event("INFO", "WORKER", f"Triggering Conditional AI Sentiment check for {asset}...")
                 news = fetch_asset_news(asset, limit=10)
-                ai_result = analyze_sentiment(asset, news)
+                ai_result = analyze_sentiment(asset, news, sentiment_model_override=model_override)
                 
                 sentiment_score = ai_result["sentiment_score"]
                 ai_reason = ai_result["reason"]
+                
+                # Update last AI check time
+                _last_ai_check_times[asset] = time.time()
                 
                 log_event("INFO", "WORKER", f"Gemini Sentiment outcome: {sentiment_score} (Reason: '{ai_reason}')")
                 

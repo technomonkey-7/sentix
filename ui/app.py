@@ -2002,6 +2002,8 @@ with tab_b:
     col_b_sel, col_b_run = st.columns([3, 1])
     with col_b_sel:
         manual_pair = st.selectbox(t("coin_to_analyze"), options=ALL_SUPPORTED_PAIRS, key="manual_pair_sel")
+        if "manual_report" in st.session_state and st.session_state["manual_report"].get("asset") != manual_pair:
+            del st.session_state["manual_report"]
     with col_b_run:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
         btn_run = st.button(t("run_manual_btn"), width="stretch")
@@ -2058,188 +2060,267 @@ with tab_b:
 
     # Render Report if it exists in session state
     if "manual_report" in st.session_state:
-        rep = st.session_state["manual_report"]
-        
-        # Verify if asset ticker is selected
-        asset_ticker = rep["asset"].split("/")[0]
-        
-        # Pre-format values to avoid f-string format specifier errors with conditional statements
-        rsi_str = f"{rep['rsi']:.2f}" if rep["rsi"] is not None else "N/A"
-        macd_diff_val = (rep["macd"] - rep["signal"]) if (rep["macd"] is not None and rep["signal"] is not None) else None
-        macd_diff_str = f"{macd_diff_val:.4f}" if macd_diff_val is not None else "N/A"
-        
-        # CSS Styling for Report card
-        sentiment_lbl = "GEMINI DUYGU SKORU" if st.session_state["lang"] == "TR" else "GEMINI SENTIMENT VERDICT"
-        st.markdown(f"""
-        <div class="report-card">
-            <h2 style="margin:0 0 1rem 0; color:#00F2FE;">📊 {t('manual_report_title', asset=rep['asset'])}</h2>
-            <div style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:1.5rem;">
-                <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); padding:1rem; border-radius:10px; min-width:180px;">
-                    <span style="color:#94A3B8; font-size:0.8rem; display:block;">{t('col_price').upper()}</span>
-                    <strong style="font-size:1.4rem; color:#FFFFFF;">${rep['price']:,.2f}</strong>
-                </div>
-                <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); padding:1rem; border-radius:10px; min-width:180px;">
-                    <span style="color:#94A3B8; font-size:0.8rem; display:block;">RSI DEĞERİ / RSI VALUE</span>
-                    <strong style="font-size:1.4rem; color:#FFFFFF;">{rsi_str}</strong>
-                </div>
-                <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); padding:1rem; border-radius:10px; min-width:180px;">
-                    <span style="color:#94A3B8; font-size:0.8rem; display:block;">MACD FARK / MACD DIFF</span>
-                    <strong style="font-size:1.4rem; color:#FFFFFF;">{macd_diff_str}</strong>
-                </div>
-                <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); padding:1rem; border-radius:10px; min-width:180px;">
-                    <span style="color:#94A3B8; font-size:0.8rem; display:block;">{sentiment_lbl}</span>
-                    <strong style="font-size:1.4rem; color:#00F2FE;">{rep['sentiment_score']:+d} / 10</strong>
+        try:
+            rep = st.session_state["manual_report"]
+            
+            # Verify if asset ticker is selected
+            asset_ticker = rep["asset"].split("/")[0]
+            
+            # Pre-format values to avoid f-string format specifier errors with conditional statements
+            try:
+                rsi_str = f"{float(rep['rsi']):.2f}" if rep.get("rsi") is not None else "N/A"
+            except (ValueError, TypeError):
+                rsi_str = str(rep.get("rsi")) if rep.get("rsi") is not None else "N/A"
+                
+            try:
+                macd_diff_val = (float(rep["macd"]) - float(rep["signal"])) if (rep.get("macd") is not None and rep.get("signal") is not None) else None
+                macd_diff_str = f"{macd_diff_val:.4f}" if macd_diff_val is not None else "N/A"
+            except (ValueError, TypeError):
+                macd_diff_str = "N/A"
+            
+            # Safe price formatting
+            price_val = rep.get("price")
+            try:
+                price_str = f"${float(price_val):,.2f}" if price_val is not None else "N/A"
+            except (ValueError, TypeError):
+                price_str = str(price_val) if price_val is not None else "N/A"
+            
+            # Safe sentiment score formatting
+            sentiment_score_val = rep.get("sentiment_score")
+            if sentiment_score_val is not None:
+                try:
+                    sentiment_score_str = f"{int(sentiment_score_val):+d}"
+                except (ValueError, TypeError):
+                    sentiment_score_str = str(sentiment_score_val)
+            else:
+                sentiment_score_str = "N/A"
+            
+            # CSS Styling for Report card
+            sentiment_lbl = "GEMINI DUYGU SKORU" if st.session_state["lang"] == "TR" else "GEMINI SENTIMENT VERDICT"
+            st.markdown(f"""
+            <div class="report-card">
+                <h2 style="margin:0 0 1rem 0; color:#00F2FE;">📊 {t('manual_report_title', asset=rep['asset'])}</h2>
+                <div style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:1.5rem;">
+                    <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); padding:1rem; border-radius:10px; min-width:180px;">
+                        <span style="color:#94A3B8; font-size:0.8rem; display:block;">{t('col_price').upper()}</span>
+                        <strong style="font-size:1.4rem; color:#FFFFFF;">{price_str}</strong>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); padding:1rem; border-radius:10px; min-width:180px;">
+                        <span style="color:#94A3B8; font-size:0.8rem; display:block;">RSI DEĞERİ / RSI VALUE</span>
+                        <strong style="font-size:1.4rem; color:#FFFFFF;">{rsi_str}</strong>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); padding:1rem; border-radius:10px; min-width:180px;">
+                        <span style="color:#94A3B8; font-size:0.8rem; display:block;">MACD FARK / MACD DIFF</span>
+                        <strong style="font-size:1.4rem; color:#FFFFFF;">{macd_diff_str}</strong>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); padding:1rem; border-radius:10px; min-width:180px;">
+                        <span style="color:#94A3B8; font-size:0.8rem; display:block;">{sentiment_lbl}</span>
+                        <strong style="font-size:1.4rem; color:#00F2FE;">{sentiment_score_str} / 10</strong>
+                    </div>
                 </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Columns inside report
-        col_rep1, col_rep2 = st.columns(2)
-        
-        with col_rep1:
-            st.markdown(f"#### {t('indicator_analysis')}")
-            m_df_desc = []
-            if rep['rsi'] is not None:
-                if st.session_state["lang"] == "TR":
-                    rsi_desc = "Aşırı Satım (Boğa Sinyali)" if rep['rsi'] <= 30 else ("Aşırı Alım (Ayı Riski)" if rep['rsi'] >= 70 else "Nötr Bölge")
-                else:
-                    rsi_desc = "Oversold (Bullish Signal)" if rep['rsi'] <= 30 else ("Overbought (Bearish Risk)" if rep['rsi'] >= 70 else "Neutral Zone")
-                m_df_desc.append({t("indicator"): "RSI (14)", t("val"): f"{rep['rsi']:.2f}", t("status"): rsi_desc})
-                
-            if rep['macd'] is not None and rep['signal'] is not None:
-                macd_diff = rep['macd'] - rep['signal']
-                if st.session_state["lang"] == "TR":
-                    macd_desc = "Boğa Sinyali (Yukarı Kesişim)" if macd_diff > 0 else "Ayı Sinyali (Aşağı Kesişim)"
-                else:
-                    macd_desc = "Bullish Cross (Above Signal)" if macd_diff > 0 else "Bearish Cross (Below Signal)"
-                m_df_desc.append({t("indicator"): "MACD Crossover", t("val"): f"MACD: {rep['macd']:.4f} | Sig: {rep['signal']:.4f}", t("status"): macd_desc})
-                
-            if rep['ema'] is not None:
-                if st.session_state["lang"] == "TR":
-                    ema_desc = "Fiyat EMA Üzerinde (Yükseliş Trendi)" if rep['price'] > rep['ema'] else "Fiyat EMA Altında (Düşüş Trendi)"
-                else:
-                    ema_desc = "Price Above EMA (Bullish Trend)" if rep['price'] > rep['ema'] else "Price Below EMA (Bearish Trend)"
-                m_df_desc.append({t("indicator"): "EMA 20", t("val"): f"${rep['ema']:,.2f}", t("status"): ema_desc})
-                
-            st.dataframe(pd.DataFrame(m_df_desc), width="stretch", hide_index=True)
+            """, unsafe_allow_html=True)
             
-            # Technical Trigger
-            if rep['trigger_side']:
-                st.warning(f"💥 **Piyasa Tetikleyici Tespit Edildi / Trigger:** {rep['trigger_reason']}")
-            else:
-                st.info(
-                    "ℹ️ **Teknik Tetikleyici:** Bu mum periyodunda herhangi bir indikatör kesişim sinyali bulunmuyor."
-                    if st.session_state["lang"] == "TR" else
-                    "ℹ️ **Technical Trigger:** No mathematical indicator crossovers detected for this completed candle period."
-                )
-
-        with col_rep2:
-            st.markdown(f"#### {t('ai_sentiment_synthesis')}")
-            st.markdown(f"**{t('news_digest_title')}**")
-            st.info(rep['digest'])
-            st.markdown(f"**{t('ai_reason_title')}**")
-            st.success(rep['ai_reason'])
-
-        # Scraped news feed visualizer
-        if "news_items" in rep and rep["news_items"]:
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown(f"#### {t('news_feed_title')}")
-            for news_item in rep["news_items"]:
-                rel_time = get_news_relative_time(news_item["pub_date"])
-                st.markdown(f"""
-                <div style="background: rgba(255,255,255,0.01); border: 1px solid rgba(255,255,255,0.04); padding: 0.8rem; border-radius: 8px; margin-bottom: 0.5rem;">
-                    <a href="{news_item['link']}" target="_blank" style="color: #00F2FE; font-weight: 600; text-decoration: none;">{news_item['title']}</a>
-                    <p style="color: #94A3B8; font-size: 0.8rem; margin: 0.2rem 0 0 0;">{news_item['description']}</p>
-                    <span style="color: #64748B; font-size: 0.75rem;">⏱️ {t('news_freshness', time=rel_time)}</span>
-                </div>
-                """, unsafe_allow_html=True)
-
-        # Order Form Controls
-        st.markdown("<hr style='border-color:rgba(255,255,255,0.05);'>", unsafe_allow_html=True)
-        st.markdown(f"#### {t('manual_order_placement')}")
-        
-        # Check active positions for this asset
-        pos_exists = get_active_position(rep['asset'])
-        
-        col_frm1, col_frm2 = st.columns(2)
-        with col_frm1:
-            st.write(f"{t('asset_type')}: **{asset_ticker}** | {t('col_price')}: **${rep['price']:,.2f}**")
-            # Calculate manual size based on NAV
-            man_risk_pct = float(get_config("risk_percentage") or 2.0)
-            man_size = total_nav * (man_risk_pct / 100.0)
-            man_size = min(man_size, usd_bal)
-            st.write(f"{t('portfolio_risk_share')} (%{man_risk_pct}): **${man_size:.2f} USD**")
-
-        with col_frm2:
-            if pos_exists:
-                # Active position exists, allow manual SELL
-                st.error(t("pos_exists_warn"))
-                btn_manual_sell = st.button(t("close_pos_btn"), width="stretch", type="primary")
-                if btn_manual_sell:
-                    # Execute manual close
-                    pnl_pct = close_active_position(rep['asset'], rep['price'], "MANUAL", "Manual trade closed by user via Tab B control panel.")
-                    
-                    # Update portfolio balance
-                    p_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
-                    trade_val = p_balance * rep['price']
-                    fee_pct = 0.001
-                    trade_net = trade_val * (1 - fee_pct)
-                    
-                    portfolio["USD"]["balance"] = usd_bal + trade_net
-                    portfolio[asset_ticker] = {"balance": 0.0, "avg_entry_price": 0.0}
-                    update_portfolio(portfolio)
-                    
-                    log_event("SUCCESS", "UI_DASHBOARD", f"🛒 MANUEL SATIŞ TAMAMLANDI: {asset_ticker} pozisyonu ${rep['price']:.2f} fiyatından kapatıldı. PnL: {pnl_pct:+.2f}%")
-                    st.toast("Pozisyon başarıyla kapatıldı!" if st.session_state["lang"] == "TR" else "Position liquidated manually!", icon="💰")
-                    del st.session_state["manual_report"]
-                    st.rerun()
-            else:
-                # No active position, allow manual BUY
-                btn_manual_buy = st.button(t("buy_order_btn"), width="stretch")
-                if btn_manual_buy:
-                    if usd_bal < 10.0:
-                        st.error(t("insufficient_bal_err"))
+            # Columns inside report
+            col_rep1, col_rep2 = st.columns(2)
+            
+            with col_rep1:
+                st.markdown(f"#### {t('indicator_analysis')}")
+                m_df_desc = []
+                if rep.get('rsi') is not None:
+                    if st.session_state["lang"] == "TR":
+                        try:
+                            rsi_desc = "Aşırı Satım (Boğa Sinyali)" if float(rep['rsi']) <= 30 else ("Aşırı Alım (Ayı Riski)" if float(rep['rsi']) >= 70 else "Nötr Bölge")
+                        except (ValueError, TypeError):
+                            rsi_desc = "Nötr Bölge"
                     else:
-                          trade_net = man_size * (1 - 0.001)
-                          qty = trade_net / rep['price']
-                          
-                          # Stop loss / Take profit targets
-                          m_sl = float(get_config("stop_loss_pct") or 3.0)
-                          m_tp = float(get_config("take_profit_pct") or 6.0)
-                          sl_price = rep['price'] * (1 - m_sl / 100.0)
-                          tp_price = rep['price'] * (1 + m_tp / 100.0)
-                          
-                          # Update portfolio memory
-                          portfolio["USD"]["balance"] = usd_bal - man_size
-                          existing_ast = portfolio.get(asset_ticker, {"balance": 0.0, "avg_entry_price": 0.0})
-                          new_bal = existing_ast["balance"] + qty
-                          new_avg = ((existing_ast["balance"] * existing_ast["avg_entry_price"]) + (qty * rep['price'])) / new_bal if new_bal > 0 else rep['price']
-                          
-                          portfolio[asset_ticker] = {
-                              "balance": new_bal,
-                              "avg_entry_price": new_avg
-                          }
-                          update_portfolio(portfolio)
-                          
-                          # Record BUY
-                          record_trade(
-                              asset=rep['asset'],
-                              side="BUY",
-                              price=rep['price'],
-                              amount=qty,
-                              trade_type="TECHNICAL" if not rep['trigger_side'] else "AI_CONFIRMED",
-                              sentiment_score=rep['sentiment_score'],
-                              reason=f"Manual execution via Tab B dashboard. Tech: {rep['trigger_reason']} | AI: {rep['ai_reason']}",
-                              stop_loss=sl_price,
-                              take_profit=tp_price,
-                              is_active=1
-                          )
-                          
-                          log_event("SUCCESS", "UI_DASHBOARD", f"🛒 MANUEL ALIM GERÇEKLEŞTİ: {qty:.4f} {asset_ticker} alındı. Fiyat: ${rep['price']:.2f} | SL: ${sl_price:.2f}, TP: ${tp_price:.2f}")
-                          st.toast("Manuel alım başarıyla gerçekleşti!" if st.session_state["lang"] == "TR" else "Manual BUY executed successfully!", icon="🛒")
-                          del st.session_state["manual_report"]
-                          st.rerun()
+                        try:
+                            rsi_desc = "Oversold (Bullish Signal)" if float(rep['rsi']) <= 30 else ("Overbought (Bearish Risk)" if float(rep['rsi']) >= 70 else "Neutral Zone")
+                        except (ValueError, TypeError):
+                            rsi_desc = "Neutral Zone"
+                    m_df_desc.append({t("indicator"): "RSI (14)", t("val"): rsi_str, t("status"): rsi_desc})
+                    
+                if rep.get('macd') is not None and rep.get('signal') is not None:
+                    try:
+                        macd_diff = float(rep['macd']) - float(rep['signal'])
+                        if st.session_state["lang"] == "TR":
+                            macd_desc = "Boğa Sinyali (Yukarı Kesişim)" if macd_diff > 0 else "Ayı Sinyali (Aşağı Kesişim)"
+                        else:
+                            macd_desc = "Bullish Cross (Above Signal)" if macd_diff > 0 else "Bearish Cross (Below Signal)"
+                        macd_val_str = f"{float(rep['macd']):.4f}"
+                        sig_val_str = f"{float(rep['signal']):.4f}"
+                    except (ValueError, TypeError):
+                        macd_desc = "Neutral"
+                        macd_val_str = str(rep.get('macd'))
+                        sig_val_str = str(rep.get('signal'))
+                    m_df_desc.append({t("indicator"): "MACD Crossover", t("val"): f"MACD: {macd_val_str} | Sig: {sig_val_str}", t("status"): macd_desc})
+                    
+                if rep.get('ema') is not None:
+                    if st.session_state["lang"] == "TR":
+                        try:
+                            ema_desc = "Fiyat EMA Üzerinde (Yükseliş Trendi)" if float(rep['price']) > float(rep['ema']) else "Fiyat EMA Altında (Düşüş Trendi)"
+                        except (ValueError, TypeError):
+                            ema_desc = "Nötr Bölge"
+                    else:
+                        try:
+                            ema_desc = "Price Above EMA (Bullish Trend)" if float(rep['price']) > float(rep['ema']) else "Price Below EMA (Bearish Trend)"
+                        except (ValueError, TypeError):
+                            ema_desc = "Neutral Zone"
+                    try:
+                        ema_val_str = f"${float(rep['ema']):,.2f}" if rep.get('ema') is not None else "N/A"
+                    except (ValueError, TypeError):
+                        ema_val_str = str(rep.get('ema')) if rep.get('ema') is not None else "N/A"
+                    m_df_desc.append({t("indicator"): "EMA 20", t("val"): ema_val_str, t("status"): ema_desc})
+                    
+                st.dataframe(pd.DataFrame(m_df_desc), width="stretch", hide_index=True)
+                
+                # Technical Trigger
+                if rep.get('trigger_side'):
+                    st.warning(f"💥 **Piyasa Tetikleyici Tespit Edildi / Trigger:** {rep['trigger_reason']}")
+                else:
+                    st.info(
+                        "ℹ️ **Teknik Tetikleyici:** Bu mum periyodunda herhangi bir indikatör kesişim sinyali bulunmuyor."
+                        if st.session_state["lang"] == "TR" else
+                        "ℹ️ **Technical Trigger:** No mathematical indicator crossovers detected for this completed candle period."
+                    )
+    
+            with col_rep2:
+                st.markdown(f"#### {t('ai_sentiment_synthesis')}")
+                st.markdown(f"**{t('news_digest_title')}**")
+                st.info(rep.get('digest', 'N/A'))
+                st.markdown(f"**{t('ai_reason_title')}**")
+                st.success(rep.get('ai_reason', 'N/A'))
+    
+            # Scraped news feed visualizer
+            if "news_items" in rep and rep["news_items"]:
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown(f"#### {t('news_feed_title')}")
+                for news_item in rep["news_items"]:
+                    rel_time = get_news_relative_time(news_item["pub_date"])
+                    st.markdown(f"""
+                    <div style="background: rgba(255,255,255,0.01); border: 1px solid rgba(255,255,255,0.04); padding: 0.8rem; border-radius: 8px; margin-bottom: 0.5rem;">
+                        <a href="{news_item['link']}" target="_blank" style="color: #00F2FE; font-weight: 600; text-decoration: none;">{news_item['title']}</a>
+                        <p style="color: #94A3B8; font-size: 0.8rem; margin: 0.2rem 0 0 0;">{news_item['description']}</p>
+                        <span style="color: #64748B; font-size: 0.75rem;">⏱️ {t('news_freshness', time=rel_time)}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+    
+            # Order Form Controls
+            st.markdown("<hr style='border-color:rgba(255,255,255,0.05);'>", unsafe_allow_html=True)
+            st.markdown(f"#### {t('manual_order_placement')}")
+            
+            # Check active positions for this asset
+            pos_exists = get_active_position(rep['asset'])
+            
+            col_frm1, col_frm2 = st.columns(2)
+            with col_frm1:
+                st.write(f"{t('asset_type')}: **{asset_ticker}** | {t('col_price')}: **{price_str}**")
+                # Calculate manual size based on NAV
+                man_risk_pct = float(get_config("risk_percentage") or 2.0)
+                man_size = total_nav * (man_risk_pct / 100.0)
+                man_size = min(man_size, usd_bal)
+                st.write(f"{t('portfolio_risk_share')} (%{man_risk_pct}): **${man_size:.2f} USD**")
+    
+            with col_frm2:
+                if pos_exists:
+                    # Active position exists, allow manual SELL
+                    st.error(t("pos_exists_warn"))
+                    btn_manual_sell = st.button(t("close_pos_btn"), width="stretch", type="primary")
+                    if btn_manual_sell:
+                        # Execute manual close
+                        pnl_pct = close_active_position(rep['asset'], rep['price'], "MANUAL", "Manual trade closed by user via Tab B control panel.")
+                        
+                        # Update portfolio balance
+                        p_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
+                        trade_val = p_balance * rep['price']
+                        fee_pct = 0.001
+                        trade_net = trade_val * (1 - fee_pct)
+                        
+                        portfolio["USD"]["balance"] = usd_bal + trade_net
+                        portfolio[asset_ticker] = {"balance": 0.0, "avg_entry_price": 0.0}
+                        update_portfolio(portfolio)
+                        
+                        try:
+                            price_formatted = f"{float(rep['price']):.2f}"
+                        except (ValueError, TypeError):
+                            price_formatted = str(rep.get('price'))
+                        
+                        try:
+                            pnl_formatted = f"{float(pnl_pct):+.2f}%" if pnl_pct is not None else "N/A"
+                        except (ValueError, TypeError):
+                            pnl_formatted = str(pnl_pct)
+                            
+                        log_event("SUCCESS", "UI_DASHBOARD", f"🛒 MANUEL SATIŞ TAMAMLANDI: {asset_ticker} pozisyonu ${price_formatted} fiyatından kapatıldı. PnL: {pnl_formatted}")
+                        st.toast("Pozisyon başarıyla kapatıldı!" if st.session_state["lang"] == "TR" else "Position liquidated manually!", icon="💰")
+                        del st.session_state["manual_report"]
+                        st.rerun()
+                else:
+                    # No active position, allow manual BUY
+                    btn_manual_buy = st.button(t("buy_order_btn"), width="stretch")
+                    if btn_manual_buy:
+                        if usd_bal < 10.0:
+                            st.error(t("insufficient_bal_err"))
+                        else:
+                              trade_net = man_size * (1 - 0.001)
+                              qty = trade_net / rep['price']
+                              
+                              # Stop loss / Take profit targets
+                              m_sl = float(get_config("stop_loss_pct") or 3.0)
+                              m_tp = float(get_config("take_profit_pct") or 6.0)
+                              sl_price = rep['price'] * (1 - m_sl / 100.0)
+                              tp_price = rep['price'] * (1 + m_tp / 100.0)
+                              
+                              # Update portfolio memory
+                              portfolio["USD"]["balance"] = usd_bal - man_size
+                              existing_ast = portfolio.get(asset_ticker, {"balance": 0.0, "avg_entry_price": 0.0})
+                              new_bal = existing_ast["balance"] + qty
+                              new_avg = ((existing_ast["balance"] * existing_ast["avg_entry_price"]) + (qty * rep['price'])) / new_bal if new_bal > 0 else rep['price']
+                              
+                              portfolio[asset_ticker] = {
+                                  "balance": new_bal,
+                                  "avg_entry_price": new_avg
+                              }
+                              update_portfolio(portfolio)
+                              
+                              # Record BUY
+                              record_trade(
+                                  asset=rep['asset'],
+                                  side="BUY",
+                                  price=rep['price'],
+                                  amount=qty,
+                                  trade_type="TECHNICAL" if not rep['trigger_side'] else "AI_CONFIRMED",
+                                  sentiment_score=rep['sentiment_score'],
+                                  reason=f"Manual execution via Tab B dashboard. Tech: {rep['trigger_reason']} | AI: {rep['ai_reason']}",
+                                  stop_loss=sl_price,
+                                  take_profit=tp_price,
+                                  is_active=1
+                              )
+                              
+                              try:
+                                  qty_fmt = f"{float(qty):.4f}"
+                              except (ValueError, TypeError):
+                                  qty_fmt = str(qty)
+                              try:
+                                  price_fmt = f"{float(rep['price']):.2f}"
+                              except (ValueError, TypeError):
+                                  price_fmt = str(rep.get('price'))
+                              try:
+                                  sl_fmt = f"{float(sl_price):.2f}"
+                              except (ValueError, TypeError):
+                                  sl_fmt = str(sl_price)
+                              try:
+                                  tp_fmt = f"{float(tp_price):.2f}"
+                              except (ValueError, TypeError):
+                                  tp_fmt = str(tp_price)
+                                  
+                              log_event("SUCCESS", "UI_DASHBOARD", f"🛒 MANUEL ALIM GERÇEKLEŞTİ: {qty_fmt} {asset_ticker} alındı. Fiyat: ${price_fmt} | SL: ${sl_fmt}, TP: ${tp_fmt}")
+                              st.toast("Manuel alım başarıyla gerçekleşti!" if st.session_state["lang"] == "TR" else "Manual BUY executed successfully!", icon="🛒")
+                              del st.session_state["manual_report"]
+                              st.rerun()
+        except Exception as render_err:
+            st.error(f"Rapor yüklenirken görselleştirme hatası oluştu: {render_err}" if st.session_state["lang"] == "TR" else f"Visualization error occurred while loading report: {render_err}")
+            import traceback
+            st.code(traceback.format_exc())
 
 # ==========================================
 #        TAB C: LOGLAR VE ŞEFFAFLIK
