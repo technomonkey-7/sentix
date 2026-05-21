@@ -1,0 +1,24 @@
+# Ignore Git metadata
+.git
+.github
+
+# Ignore Python caches and virtual environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+venv/
+ENV/
+
+# Ignore sensitive files (Prevent credential leaks)
+gemini_keys.txt
+.env
+
+# Ignore local databases and user settings
+data.db
+.vscode/
+.idea/
+.streamlit/secrets.toml
+scratch/

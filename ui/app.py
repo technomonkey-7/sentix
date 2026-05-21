@@ -1095,21 +1095,18 @@ st.session_state["lang"] = "TR" if lang_opt == "Türkçe" else "EN"
 st.sidebar.markdown(f"<h2 style='text-align: center; color: #FFFFFF;'>⚡ {t('title').split('|')[0].strip()}</h2>", unsafe_allow_html=True)
 st.sidebar.markdown("<hr style='margin-top: 0; margin-bottom: 1.5rem; border-color: rgba(255,255,255,0.05);'>", unsafe_allow_html=True)
 
-# Gemini API Key Input
-env_key = os.getenv("GEMINI_API_KEY", "")
-db_key = get_config("gemini_api_key", "")
-active_key = db_key if db_key else env_key
-
-gemini_key = st.sidebar.text_input(
-    "Google Gemini API Key",
-    value=active_key,
-    type="password",
-    help=t("api_key_help")
-)
-
-if gemini_key != db_key:
-    save_config("gemini_api_key", gemini_key)
-    st.sidebar.success(t("api_key_updated"))
+# Gemini API Key Status (Removed input field from UI to prevent exposure over HTTP)
+from ai.sentiment_analyzer import load_api_keys
+sa_keys = load_api_keys()
+if sa_keys:
+    st.sidebar.success(f"🔑 Gemini Keys: {len(sa_keys)} keys active in server pool")
+else:
+    db_key = get_config("gemini_api_key", "")
+    env_key = os.getenv("GEMINI_API_KEY", "")
+    if db_key or env_key:
+        st.sidebar.warning("⚠️ Gemini Keys: Using fallback DB/Env (Hidden for security)")
+    else:
+        st.sidebar.error("❌ Gemini Keys: No keys configured! Add keys to gemini_keys.txt on server")
 
 # Active Trading Assets Configuration
 ALL_SUPPORTED_PAIRS = [

@@ -145,8 +145,9 @@ def _execute_cycle_logic(force=False):
     2. Fetches prices and computes indicators for all active assets.
     3. Runs real-time SL/TP monitor to liquidate open positions immediately when hit.
     4. Runs deterministic technical analysis to check for crossover triggers.
-    5. If triggered, initiates live Google News scraping and hybrid Gemini API sentiment check.
-    6. Handles paper trading buy/sell executions and state saves.
+    5. Double-checks triggers with 4-hour timeframe trend and volume moving average.
+    6. Batches news scraping and structured Gemini API sentiment checks for all candidates in one call.
+    7. Handles paper trading buy/sell executions and state saves.
     """
     log_event("INFO", "WORKER", "Starting algorithmic market analysis tick...")
     
@@ -166,7 +167,9 @@ def _execute_cycle_logic(force=False):
     
     log_event("INFO", "WORKER", f"Total NAV: ${total_nav:.2f} | Risk Size: {risk_pct}% (${total_nav * (risk_pct/100.0):.2f})")
     
-    # Process each asset independently
+    candidates_to_analyze = []
+    
+    # Process each asset independently for technical crossover checking
     for asset in active_assets:
         try:
             # Update heartbeat inside the loop so UI knows bot is alive even during a long analysis cycle
@@ -177,7 +180,7 @@ def _execute_cycle_logic(force=False):
                 
             log_event("INFO", "WORKER", f"Analyzing asset: {asset}")
             
-            # Fetch 1h and 4h historical candle data (defaulting to 1h for signals)
+            # Fetch 1h historical candle data
             candles_df = fetch_ohlcv(symbol=asset, timeframe="1h", limit=100)
             
             if candles_df is None or candles_df.empty:
@@ -188,7 +191,6 @@ def _execute_cycle_logic(force=False):
             candles_df = calculate_indicators(candles_df)
             
             # Persist candles to database
-            # Convert DF to list of dicts for the DB helper
             candles_list = []
             for _, row in candles_df.iterrows():
                 candles_list.append({
@@ -222,7 +224,7 @@ def _execute_cycle_logic(force=False):
             candle_close_price = float(completed_candle["close"]) # For indicator analysis
             completed_timestamp = completed_candle["timestamp"]
             
-            # Use real-time ticker price for SL/TP monitoring (more accurate than stale candle)
+            # Use real-time ticker price for SL/TP monitoring
             realtime_price = fetch_realtime_price(asset)
             current_price = realtime_price if realtime_price else candle_close_price
             
@@ -259,9 +261,9 @@ def _execute_cycle_logic(force=False):
                 buy_price = active_pos.get("price")
                 log_event("INFO", "WORKER", f"Active position found for {asset} at entry price ${buy_price:.2f}. SL: ${sl_val:.2f}, TP: ${tp_val:.2f}. Real-time Price: ${current_price:.2f}")
                 
-                # RACE CONDITION FIX: Re-read portfolio from DB before any liquidation
+                # Re-read portfolio from DB before any liquidation to avoid race conditions
                 portfolio = get_portfolio()
-                fee_pct = float(get_config("fee_pct", "0.001"))  # Configurable fee
+                fee_pct = float(get_config("fee_pct", "0.001"))
                 
                 # Check Stop-Loss
                 if sl_val and current_price <= sl_val:
@@ -272,14 +274,12 @@ def _execute_cycle_logic(force=False):
                     trade_value = asset_balance * current_price
                     trade_net_value = trade_value * (1 - fee_pct)
                     
-                    # Process database updates (re-read portfolio to avoid race condition)
                     portfolio["USD"]["balance"] = portfolio.get("USD", {}).get("balance", 0.0) + trade_net_value
                     portfolio[asset_ticker] = {"balance": 0.0, "avg_entry_price": 0.0}
                     update_portfolio(portfolio)
                     
                     pnl_pct = close_active_position(asset, current_price, "STOP_LOSS", f"Stop Loss breached at ${sl_val:.2f}")
                     log_event("SUCCESS", "WORKER", f"💀 Stop Loss liquidation completed for {asset} with PnL: {pnl_pct:+.2f}%")
-                    # Re-read portfolio after trade to prevent race conditions with next asset
                     portfolio = get_portfolio()
                     total_nav = calculate_total_nav(portfolio)
                     continue
@@ -293,14 +293,12 @@ def _execute_cycle_logic(force=False):
                     trade_value = asset_balance * current_price
                     trade_net_value = trade_value * (1 - fee_pct)
                     
-                    # Process database updates
                     portfolio["USD"]["balance"] = portfolio.get("USD", {}).get("balance", 0.0) + trade_net_value
                     portfolio[asset_ticker] = {"balance": 0.0, "avg_entry_price": 0.0}
                     update_portfolio(portfolio)
                     
                     pnl_pct = close_active_position(asset, current_price, "TAKE_PROFIT", f"Take Profit breached at ${tp_val:.2f}")
                     log_event("SUCCESS", "WORKER", f"🎉 Take Profit liquidation completed for {asset} with PnL: {pnl_pct:+.2f}%")
-                    # Re-read portfolio after trade to prevent race conditions with next asset
                     portfolio = get_portfolio()
                     total_nav = calculate_total_nav(portfolio)
                     continue
@@ -308,55 +306,28 @@ def _execute_cycle_logic(force=False):
             # Check for deterministic crossover triggers
             trigger_side, trigger_reason = check_triggers(candles_df)
             
-            global _last_analyzed_timestamps, _last_ai_check_times
+            global _last_analyzed_timestamps
             already_analyzed = (not force and _last_analyzed_timestamps.get(asset) == completed_timestamp)
-            
-            is_cooldown_recheck = False
-            model_override = None
             
             # Fresh portfolio state (we will read it here for checks)
             portfolio = get_portfolio()
-            total_nav = calculate_total_nav(portfolio)
             usd_balance = portfolio.get("USD", {}).get("balance", 0.0)
             asset_ticker = asset.split("/")[0]
             asset_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
             
             if already_analyzed:
-                if trigger_side:
-                    can_act = False
-                    if trigger_side == "BUY" and not active_pos and usd_balance >= 10.0:
-                        can_act = True
-                    elif trigger_side == "SELL" and (asset_balance > 0.0001 or active_pos):
-                        can_act = True
-                        
-                    if can_act:
-                        last_ai_time = _last_ai_check_times.get(asset, 0)
-                        elapsed_since_ai = time.time() - last_ai_time
-                        if last_ai_time == 0:
-                            is_cooldown_recheck = True
-                            log_event("INFO", "WORKER", f"{asset}: Candle {completed_timestamp} was already analyzed, but active trigger {trigger_side} exists and Gemini has not been called yet. Running first sentiment check.")
-                        elif elapsed_since_ai >= 1200: # 20 minutes (1200 seconds)
-                            is_cooldown_recheck = True
-                            model_override = "gemini-3.1-flash-lite"
-                            log_event("INFO", "WORKER", f"{asset}: Candle {completed_timestamp} was already analyzed, but active trigger {trigger_side} exists. Cooldown elapsed ({elapsed_since_ai:.0f}s >= 1200s). Re-checking sentiment using '{model_override}' to avoid rate limits.")
+                log_event("INFO", "WORKER", f"{asset}: Candle at {completed_timestamp} already analyzed. Skipping trade decisions.")
+                continue
                 
-                if not is_cooldown_recheck:
-                    log_event("INFO", "WORKER", f"{asset}: Candle at {completed_timestamp} already analyzed. Skipping trade decisions.")
-                    continue
-            else:
-                _last_ai_check_times[asset] = 0
-                
-            # Set this completed candle timestamp to analyzed
-            _last_analyzed_timestamps[asset] = completed_timestamp
-            
             if trigger_side:
                 log_event("WARNING", "WORKER", f"💥 Technical [{trigger_side}] Trigger detected for {asset}! Reason: {trigger_reason}")
                 
+                # Check portfolio constraints first
                 if trigger_side == "BUY" and usd_balance < 10.0:
-                    log_event("INFO", "WORKER", f"Insufficient USD balance (${usd_balance:.2f}) to perform BUY on {asset}. Skipping Gemini call.")
+                    log_event("INFO", "WORKER", f"Insufficient USD balance (${usd_balance:.2f}) to perform BUY on {asset}. Skipping.")
                     continue
                 elif trigger_side == "SELL" and asset_balance <= 0.0001:
-                    log_event("INFO", "WORKER", f"No holding of {asset_ticker} ({asset_balance:.4f}) to perform SELL. Skipping Gemini call.")
+                    log_event("INFO", "WORKER", f"No holding of {asset_ticker} ({asset_balance:.4f}) to perform SELL. Skipping.")
                     continue
                 
                 # If we are BUY and we already have an active position, skip to avoid double exposure
@@ -364,116 +335,37 @@ def _execute_cycle_logic(force=False):
                     log_event("INFO", "WORKER", f"Active position already exists for {asset}. Skipping double-exposure BUY order.")
                     continue
                 
-                # STEP 2 & 3: Conditional AI news sentiment verification
-                log_event("INFO", "WORKER", f"Triggering Conditional AI Sentiment check for {asset}...")
-                news = fetch_asset_news(asset, limit=10)
-                ai_result = analyze_sentiment(asset, news, sentiment_model_override=model_override)
-                
-                sentiment_score = ai_result["sentiment_score"]
-                ai_reason = ai_result["reason"]
-                
-                # Update last AI check time
-                _last_ai_check_times[asset] = time.time()
-                
-                log_event("INFO", "WORKER", f"Gemini Sentiment outcome: {sentiment_score} (Reason: '{ai_reason}')")
-                
-                # Evaluate final trade decision using technical triggers and AI scores
-                if trigger_side == "BUY":
-                    if sentiment_score >= sentiment_threshold:
-                        # Confirm paper buy execution using Cash Sizing Rule: risk_pct of Total NAV
-                        trade_value = total_nav * (risk_pct / 100.0)
-                        trade_value = min(trade_value, usd_balance)
-                        
-                        if trade_value < 10.0:
-                            log_event("WARNING", "WORKER", f"Trade size ${trade_value:.2f} is below $10 minimum. Skipping BUY on {asset}.")
-                            continue
-                            
-                        fee_pct = float(get_config("fee_pct", "0.001"))  # Configurable exchange fee
-                        trade_net_value = trade_value * (1 - fee_pct)
-                        amount_to_buy = trade_net_value / current_price
-                        
-                        # Update portfolio memory
-                        portfolio["USD"]["balance"] = usd_balance - trade_value
-                        
-                        existing_asset = portfolio.get(asset_ticker, {"balance": 0.0, "avg_entry_price": 0.0})
-                        old_balance = existing_asset["balance"]
-                        old_avg = existing_asset["avg_entry_price"]
-                        
-                        new_balance = old_balance + amount_to_buy
-                        # Weighted average entry price
-                        new_avg = ((old_balance * old_avg) + (amount_to_buy * current_price)) / new_balance if new_balance > 0 else current_price
-                        
-                        portfolio[asset_ticker] = {
-                            "balance": new_balance,
-                            "avg_entry_price": new_avg
-                        }
-                        
-                        # Calculate Stop Loss and Take Profit
-                        sl_price = current_price * (1 - sl_pct / 100.0)
-                        tp_price = current_price * (1 + tp_pct / 100.0)
-                        
-                        # Persist to database
-                        update_portfolio(portfolio)
-                        record_trade(
-                            asset=asset,
-                            side="BUY",
-                            price=current_price,
-                            amount=amount_to_buy,
-                            trade_type="AI_CONFIRMED",
-                            sentiment_score=sentiment_score,
-                            reason=f"Technical: {trigger_reason} | AI confirmed: {ai_reason}",
-                            stop_loss=sl_price,
-                            take_profit=tp_price,
-                            is_active=1
-                        )
-                        log_event("SUCCESS", "WORKER", f"🛒 PAPER BUY EXECUTED: Bought {amount_to_buy:.4f} {asset_ticker} at ${current_price:.2f} | SL: ${sl_price:.2f}, TP: ${tp_price:.2f} (NAV size: ${trade_value:.2f})")
-                        # RACE CONDITION FIX: Re-read portfolio after successful trade
-                        portfolio = get_portfolio()
-                        total_nav = calculate_total_nav(portfolio)
+                # ---------------- DOUBLE-CHECK MATH FILTER (4h Trend & Volume) ----------------
+                log_event("INFO", "WORKER", f"Performing Double-Check Math Filter for {asset} on 4h timeframe...")
+                candles_df_4h = fetch_ohlcv(symbol=asset, timeframe="4h", limit=100)
+                if candles_df_4h is not None and not candles_df_4h.empty:
+                    # Calculate indicators for 4h candles
+                    candles_df_4h = calculate_indicators(candles_df_4h)
+                    
+                    from core.math_engine import confirm_with_higher_tf
+                    confirmed, double_check_reason = confirm_with_higher_tf(candles_df, candles_df_4h, trigger_side)
+                    
+                    if not confirmed:
+                        log_event("WARNING", "WORKER", f"❌ {asset} - {trigger_side} trigger REJECTED by 4h double-check filter. Reason: {double_check_reason}")
+                        # Mark this completed candle timestamp as analyzed to prevent spamming
+                        _last_analyzed_timestamps[asset] = completed_timestamp
+                        continue
                     else:
-                        log_event("WARNING", "WORKER", f"❌ Technical BUY filtered out by Gemini AI. Sentiment Score ({sentiment_score}) did not meet threshold (>= {sentiment_threshold}).")
-                        
-                elif trigger_side == "SELL":
-                    if sentiment_score <= -sentiment_threshold:
-                        # Confirm paper sell execution (liquidate full asset holdings)
-                        amount_to_sell = asset_balance
-                        trade_value = amount_to_sell * current_price
-                        fee_pct = float(get_config("fee_pct", "0.001"))
-                        trade_net_value = trade_value * (1 - fee_pct)
-                        
-                        # Update portfolio memory
-                        portfolio["USD"]["balance"] = usd_balance + trade_net_value
-                        portfolio[asset_ticker] = {
-                            "balance": 0.0,
-                            "avg_entry_price": 0.0
-                        }
-                        
-                        # Persist to database
-                        update_portfolio(portfolio)
-                        
-                        # Close active position in database if exists
-                        if active_pos:
-                            pnl_pct = close_active_position(asset, current_price, "AI_CONFIRMED", f"Bearish crossover confirmed by AI: {ai_reason}")
-                            log_event("SUCCESS", "WORKER", f"💰 PAPER SELL (POSITION CLOSED): Sold {amount_to_sell:.4f} {asset_ticker} at ${current_price:.2f} (Net: ${trade_net_value:.2f}, PnL: {pnl_pct:+.2f}%)")
-                        else:
-                            record_trade(
-                                asset=asset,
-                                side="SELL",
-                                price=current_price,
-                                amount=amount_to_sell,
-                                trade_type="AI_CONFIRMED",
-                                sentiment_score=sentiment_score,
-                                reason=f"Technical: {trigger_reason} | AI confirmed: {ai_reason}",
-                                is_active=0
-                            )
-                            log_event("SUCCESS", "WORKER", f"💰 PAPER SELL EXECUTED: Sold {amount_to_sell:.4f} {asset_ticker} at ${current_price:.2f} (Net: ${trade_net_value:.2f})")
-                        # RACE CONDITION FIX: Re-read portfolio after trade
-                        portfolio = get_portfolio()
-                        total_nav = calculate_total_nav(portfolio)
-                    else:
-                        log_event("WARNING", "WORKER", f"❌ Technical SELL filtered out by Gemini AI. Sentiment Score ({sentiment_score}) did not meet bearish threshold (<= -{sentiment_threshold}).")
-            else:
-                log_event("INFO", "WORKER", f"No technical crossovers for {asset}. Bypassing Gemini API to conserve tokens.")
+                        log_event("SUCCESS", "WORKER", f"✅ {asset} - {trigger_side} trigger CONFIRMED by 4h double-check. Reason: {double_check_reason}")
+                else:
+                    log_event("WARNING", "WORKER", f"Could not fetch 4h candles for {asset}. Skipping double-check for safety.")
+                    continue
+                
+                # Add to batch candidates
+                candidates_to_analyze.append({
+                    "asset": asset,
+                    "trigger_side": trigger_side,
+                    "trigger_reason": trigger_reason,
+                    "completed_timestamp": completed_timestamp,
+                    "current_price": current_price,
+                    "asset_ticker": asset_ticker,
+                    "active_pos": active_pos
+                })
                 
         except Exception as asset_err:
             log_event("ERROR", "WORKER", f"Error evaluating {asset} inside tick cycle: {asset_err}")
@@ -482,6 +374,159 @@ def _execute_cycle_logic(force=False):
                 _last_analyzed_timestamps[asset] = None
             import traceback
             traceback.print_exc()
+
+    # Process batch sentiment for all candidates
+    if candidates_to_analyze:
+        log_event("INFO", "WORKER", f"Processing news sentiment for {len(candidates_to_analyze)} candidate assets in a single batch...")
+        
+        # Scrape news for each candidate
+        batch_input = []
+        for c in candidates_to_analyze:
+            news = fetch_asset_news(c["asset"], limit=10)
+            batch_input.append({
+                "symbol": c["asset"],
+                "news_items": news
+            })
+            
+        # Call batch sentiment analyzer
+        from ai.sentiment_analyzer import analyze_sentiment_batch
+        ai_results = analyze_sentiment_batch(batch_input)
+        
+        # Map results back and execute trades
+        ai_map = {res["symbol"]: res for res in ai_results}
+        
+        # Refresh portfolio/nav
+        portfolio = get_portfolio()
+        total_nav = calculate_total_nav(portfolio)
+        
+        for c in candidates_to_analyze:
+            asset = c["asset"]
+            trigger_side = c["trigger_side"]
+            trigger_reason = c["trigger_reason"]
+            completed_timestamp = c["completed_timestamp"]
+            current_price = c["current_price"]
+            asset_ticker = c["asset_ticker"]
+            active_pos = c["active_pos"]
+            
+            # Get latest values for usd_balance / asset_balance to account for trades inside the loop
+            usd_balance = portfolio.get("USD", {}).get("balance", 0.0)
+            asset_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
+            
+            ai_res = ai_map.get(asset)
+            if not ai_res:
+                log_event("WARNING", "WORKER", f"No AI sentiment results returned for {asset}. Skipping.")
+                _last_analyzed_timestamps[asset] = completed_timestamp
+                continue
+                
+            sentiment_score = ai_res["sentiment_score"]
+            ai_reason = ai_res["reason"]
+            
+            log_event("INFO", "WORKER", f"Gemini Sentiment outcome for {asset}: {sentiment_score} (Reason: '{ai_reason}')")
+            
+            # Evaluate trade thresholds
+            if trigger_side == "BUY":
+                if active_pos or usd_balance < 10.0:
+                    log_event("INFO", "WORKER", f"Skipping trade execution for {asset} (usd_balance: ${usd_balance:.2f}, active_pos: {active_pos})")
+                    _last_analyzed_timestamps[asset] = completed_timestamp
+                    continue
+                    
+                if sentiment_score >= sentiment_threshold:
+                    # Confirm paper buy execution using Cash Sizing Rule: risk_pct of Total NAV
+                    trade_value = total_nav * (risk_pct / 100.0)
+                    trade_value = min(trade_value, usd_balance)
+                    
+                    if trade_value < 10.0:
+                        log_event("WARNING", "WORKER", f"Trade size ${trade_value:.2f} is below $10 minimum. Skipping BUY on {asset}.")
+                        _last_analyzed_timestamps[asset] = completed_timestamp
+                        continue
+                        
+                    fee_pct = float(get_config("fee_pct", "0.001"))
+                    trade_net_value = trade_value * (1 - fee_pct)
+                    amount_to_buy = trade_net_value / current_price
+                    
+                    # Update portfolio memory
+                    portfolio["USD"]["balance"] = usd_balance - trade_value
+                    
+                    existing_asset = portfolio.get(asset_ticker, {"balance": 0.0, "avg_entry_price": 0.0})
+                    old_balance = existing_asset["balance"]
+                    old_avg = existing_asset["avg_entry_price"]
+                    
+                    new_balance = old_balance + amount_to_buy
+                    new_avg = ((old_balance * old_avg) + (amount_to_buy * current_price)) / new_balance if new_balance > 0 else current_price
+                    
+                    portfolio[asset_ticker] = {
+                        "balance": new_balance,
+                        "avg_entry_price": new_avg
+                    }
+                    
+                    sl_price = current_price * (1 - sl_pct / 100.0)
+                    tp_price = current_price * (1 + tp_pct / 100.0)
+                    
+                    update_portfolio(portfolio)
+                    record_trade(
+                        asset=asset,
+                        side="BUY",
+                        price=current_price,
+                        amount=amount_to_buy,
+                        trade_type="AI_CONFIRMED",
+                        sentiment_score=sentiment_score,
+                        reason=f"Technical: {trigger_reason} | AI confirmed: {ai_reason}",
+                        stop_loss=sl_price,
+                        take_profit=tp_price,
+                        is_active=1
+                    )
+                    log_event("SUCCESS", "WORKER", f"🛒 PAPER BUY EXECUTED: Bought {amount_to_buy:.4f} {asset_ticker} at ${current_price:.2f} | SL: ${sl_price:.2f}, TP: ${tp_price:.2f} (NAV size: ${trade_value:.2f})")
+                    
+                    portfolio = get_portfolio()
+                    total_nav = calculate_total_nav(portfolio)
+                else:
+                    log_event("WARNING", "WORKER", f"❌ Technical BUY filtered out by Gemini AI. Sentiment Score ({sentiment_score}) did not meet threshold (>= {sentiment_threshold}).")
+                    
+            elif trigger_side == "SELL":
+                if asset_balance <= 0.0001:
+                    log_event("INFO", "WORKER", f"Skipping sell trade execution for {asset} (asset_balance: {asset_balance:.4f})")
+                    _last_analyzed_timestamps[asset] = completed_timestamp
+                    continue
+                    
+                if sentiment_score <= -sentiment_threshold:
+                    # Confirm paper sell execution (liquidate full asset holdings)
+                    amount_to_sell = asset_balance
+                    trade_value = amount_to_sell * current_price
+                    fee_pct = float(get_config("fee_pct", "0.001"))
+                    trade_net_value = trade_value * (1 - fee_pct)
+                    
+                    # Update portfolio memory
+                    portfolio["USD"]["balance"] = usd_balance + trade_net_value
+                    portfolio[asset_ticker] = {
+                        "balance": 0.0,
+                        "avg_entry_price": 0.0
+                    }
+                    
+                    update_portfolio(portfolio)
+                    
+                    if active_pos:
+                        pnl_pct = close_active_position(asset, current_price, "AI_CONFIRMED", f"Bearish crossover confirmed by AI: {ai_reason}")
+                        log_event("SUCCESS", "WORKER", f"💰 PAPER SELL (POSITION CLOSED): Sold {amount_to_sell:.4f} {asset_ticker} at ${current_price:.2f} (Net: ${trade_net_value:.2f}, PnL: {pnl_pct:+.2f}%)")
+                    else:
+                        record_trade(
+                            asset=asset,
+                            side="SELL",
+                            price=current_price,
+                            amount=amount_to_sell,
+                            trade_type="AI_CONFIRMED",
+                            sentiment_score=sentiment_score,
+                            reason=f"Technical: {trigger_reason} | AI confirmed: {ai_reason}",
+                            is_active=0
+                        )
+                        log_event("SUCCESS", "WORKER", f"💰 PAPER SELL EXECUTED: Sold {amount_to_sell:.4f} {asset_ticker} at ${current_price:.2f} (Net: ${trade_net_value:.2f})")
+                        
+                    portfolio = get_portfolio()
+                    total_nav = calculate_total_nav(portfolio)
+                else:
+                    log_event("WARNING", "WORKER", f"❌ Technical SELL filtered out by Gemini AI. Sentiment Score ({sentiment_score}) did not meet bearish threshold (<= -{sentiment_threshold}).")
+            
+            # Set this completed candle timestamp to analyzed
+            _last_analyzed_timestamps[asset] = completed_timestamp
             
     log_event("INFO", "WORKER", "Algorithmic market analysis tick complete.")
 

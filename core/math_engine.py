@@ -119,3 +119,67 @@ def check_triggers(df):
         return "SELL", "EMA Crossover (Price fell below 20 EMA)"
 
     return None, "No indicator crossovers detected."
+
+def confirm_with_higher_tf(df_1h, df_4h, trigger_side):
+    """
+    Performs double-check confirmation using 4h timeframe trend and 1h volume analysis.
+    
+    For BUY:
+      - 4h trend must be bullish (4h close > 4h EMA 20 OR 4h MACD > 4h MACD Signal).
+      - 1h volume of the trigger candle must be above the 20-period moving average of 1h volume (volume expansion).
+    For SELL:
+      - 4h trend must be bearish (4h close < 4h EMA 20 OR 4h MACD < 4h MACD Signal).
+      
+    Returns:
+      confirmed: bool
+      reason: str description of confirmation/rejection details
+    """
+    if df_4h is None or len(df_4h) < 20 or 'ema' not in df_4h.columns:
+        return False, "Insufficient 4h candle data to verify trend"
+        
+    c_4h = df_4h.iloc[-2] # Latest completed 4h candle
+    
+    try:
+        close_4h = float(c_4h['close'])
+        ema_4h = float(c_4h['ema'])
+        
+        # Optional MACD checks
+        macd_4h = float(c_4h['macd']) if 'macd' in c_4h and c_4h['macd'] is not None else None
+        sig_4h = float(c_4h['macd_signal']) if 'macd_signal' in c_4h and c_4h['macd_signal'] is not None else None
+        
+        is_4h_bullish = close_4h > ema_4h
+        if macd_4h is not None and sig_4h is not None:
+            is_4h_bullish = is_4h_bullish or (macd_4h > sig_4h)
+            
+        is_4h_bearish = close_4h < ema_4h
+        if macd_4h is not None and sig_4h is not None:
+            is_4h_bearish = is_4h_bearish or (macd_4h < sig_4h)
+            
+    except (ValueError, KeyError, TypeError) as e:
+        return False, f"Failed to parse 4h trend metrics: {e}"
+        
+    # Check volume on 1h candles
+    if df_1h is None or len(df_1h) < 20:
+        return False, "Insufficient 1h candle data to verify volume"
+        
+    try:
+        latest_vol_1h = float(df_1h.iloc[-2]['volume'])
+        vol_ma_1h = float(df_1h['volume'].tail(20).mean())
+        volume_confirmed = latest_vol_1h >= vol_ma_1h
+    except (ValueError, KeyError, TypeError) as e:
+        return False, f"Failed to parse volume metrics: {e}"
+        
+    if trigger_side == "BUY":
+        if not is_4h_bullish:
+            return False, f"4h trend is not bullish (Close: {close_4h:.2f}, EMA 20: {ema_4h:.2f})"
+        if not volume_confirmed:
+            return False, f"1h volume ({latest_vol_1h:.1f}) is below 20-period average ({vol_ma_1h:.1f})"
+        return True, f"Confirmed: 4h trend is bullish and volume ({latest_vol_1h:.1f} >= MA {vol_ma_1h:.1f}) is expanding"
+        
+    elif trigger_side == "SELL":
+        if not is_4h_bearish:
+            return False, f"4h trend is not bearish (Close: {close_4h:.2f}, EMA 20: {ema_4h:.2f})"
+        return True, "Confirmed: 4h trend is bearish"
+        
+    return False, f"Unknown trigger side: {trigger_side}"
+
