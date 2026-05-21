@@ -51,6 +51,8 @@ T = {
         "exchange_name_help": "Piyasa verilerinin çekileceği borsa (örn: binance, bybit, kraken, okx, gateio, coinbase).",
         "min_sentiment": "Min Yapay Zeka Duygu Eşiği",
         "min_sentiment_help": "Teknik sinyal oluştuktan sonra, işlemin onaylanması için gereken minimum yapay zeka duygu skoru (örn: 3).",
+        "news_freshness_hours": "Haber Tazelik Limiti (Saat)",
+        "news_freshness_hours_help": "Gemini analizine dahil edilecek haberlerin maksimum yaşı. Örneğin, 24 saatlik haberler 1H/4H grafikler için en ideali.",
         "quick_actions": "⚙️ Hızlı Eylemler",
         "sync_tick": "🚀 Sync Tick",
         "sync_tick_help": "Veri tabanını anlık günceller, indikatörleri hesaplar ve arka plan tarama döngüsünü tetikler.",
@@ -189,6 +191,8 @@ T = {
         "exchange_name_help": "The exchange from which market data will be fetched (e.g., binance, bybit, kraken, okx, gateio, coinbase).",
         "min_sentiment": "Min AI Sentiment Threshold",
         "min_sentiment_help": "The minimum sentiment score (e.g. 3) required from Gemini to approve and execute a trade after a technical trigger.",
+        "news_freshness_hours": "News Freshness Limit (Hours)",
+        "news_freshness_hours_help": "The maximum age of news articles to include in Gemini analysis. E.g., 24 hours is ideal for 1H/4H charts.",
         "quick_actions": "⚙️ Quick Actions",
         "sync_tick": "🚀 Sync Tick",
         "sync_tick_help": "Force updates the database, calculates indicators, and triggers the background scanning loop immediately.",
@@ -1217,6 +1221,17 @@ sentiment_threshold = st.sidebar.slider(
 if str(sentiment_threshold) != get_config("min_ai_sentiment_threshold"):
     save_config("min_ai_sentiment_threshold", sentiment_threshold)
 
+news_freshness_hours = st.sidebar.slider(
+    t("news_freshness_hours"),
+    min_value=1,
+    max_value=72,
+    value=int(get_config("news_freshness_hours", "24")),
+    step=1,
+    help=t("news_freshness_hours_help")
+)
+if str(news_freshness_hours) != get_config("news_freshness_hours"):
+    save_config("news_freshness_hours", news_freshness_hours)
+
 # Action Operations Area
 st.sidebar.markdown(f"### {t('quick_actions')}")
 
@@ -1266,6 +1281,7 @@ if st.sidebar.button(t("reset_settings"), width="stretch", help=t("reset_setting
             "summarizer_model": "gemini-3.1-flash-lite",
             "sentiment_model": "gemini-3.5-flash",
             "live_mode": "false",
+            "news_freshness_hours": "24",
         }
         for key, value in optimal_defaults.items():
             save_config(key, value)

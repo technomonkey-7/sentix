@@ -632,6 +632,8 @@ def main():
         save_config("take_profit_pct", "6.0")
     if not get_config("fee_pct"):
         save_config("fee_pct", "0.001")
+    if not get_config("news_freshness_hours"):
+        save_config("news_freshness_hours", "24")
 
     log_event("INFO", "WORKER", "Background worker initialized with dual-loop architecture.")
     

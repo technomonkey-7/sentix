@@ -146,8 +146,15 @@ def generate_simulated_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=100):
 def fetch_asset_news(symbol="BTC/USDT", limit=10):
     """
     Scrapes the latest news articles for a symbol using the free Google News RSS Feed.
+    Filters out any articles older than the configured news_freshness_hours limit.
     Extracts article title, snippet, and link, returning them as a clean list of dicts.
     """
+    # Load news freshness limit in hours from configuration, default to 24
+    try:
+        hours = int(get_config("news_freshness_hours", "24"))
+    except Exception:
+        hours = 24
+
     asset_name = symbol.split('/')[0]
     # Standard names for better search relevance
     search_keywords = {
@@ -182,12 +189,12 @@ def fetch_asset_news(symbol="BTC/USDT", limit=10):
         "FIL": "Filecoin FIL",
         "ICP": "Internet Computer ICP"
     }
-    query = search_keywords.get(asset_name, asset_name) + " crypto cryptocurrency market"
+    query = search_keywords.get(asset_name, asset_name) + f" crypto cryptocurrency market when:{hours}h"
     encoded_query = urllib.parse.quote(query)
     
     url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
     
-    log_event("INFO", "DATA_FETCHER", f"Scraping live RSS news for {symbol} using Google News feed...")
+    log_event("INFO", "DATA_FETCHER", f"Scraping live RSS news (last {hours}h) for {symbol} using Google News feed...")
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -220,10 +227,17 @@ def fetch_asset_news(symbol="BTC/USDT", limit=10):
                 except Exception:
                     pass
             
-            # If parsing failed, default to a safe old date to push to bottom
-            # (datetime.min can cause OverflowError on some platforms with timezone ops)
-            if not parsed_dt:
-                parsed_dt = datetime(2000, 1, 1, tzinfo=timezone.utc)
+            # Filter by maximum news age
+            if parsed_dt:
+                if parsed_dt.tzinfo is None:
+                    parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+                now_utc = datetime.now(timezone.utc)
+                age = now_utc - parsed_dt
+                if age > timedelta(hours=hours):
+                    continue
+            else:
+                # If we couldn't parse the date, skip it to ensure freshness guarantee
+                continue
                     
             all_items.append({
                 "title": title,

@@ -10,6 +10,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from core.math_engine import confirm_with_higher_tf, check_triggers
+from core.data_fetcher import fetch_asset_news
 import ai.sentiment_analyzer as sa
 from ai.sentiment_analyzer import (
     DigestResult,
@@ -341,6 +342,54 @@ class TestSentixOptimization(unittest.TestCase):
             analyze_sentiment_batch(candidates)
             
         self.assertIn("LIVE MODE: Batch sentiment scoring failed", str(context.exception))
+
+    @patch('core.data_fetcher.get_config')
+    @patch('requests.get')
+    def test_news_freshness_filtering(self, mock_get_request, mock_get_config):
+        from datetime import datetime, timezone, timedelta
+        import email.utils
+
+        # Configure the freshness limit to 24 hours
+        mock_get_config.side_effect = lambda key, default=None: "24" if key == "news_freshness_hours" else default
+
+        # Generate timestamps for articles
+        now_utc = datetime.now(timezone.utc)
+        fresh_date_str = email.utils.format_datetime(now_utc - timedelta(hours=2))      # 2 hours ago (should keep)
+        stale_date_str = email.utils.format_datetime(now_utc - timedelta(hours=48))     # 48 hours ago (should discard)
+
+        # Mock XML response content representing a Google News RSS Feed
+        rss_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+        <channel>
+            <title>Google News</title>
+            <item>
+                <title>Fresh Article - Bitcoin gains ground</title>
+                <link>https://example.com/fresh</link>
+                <pubDate>{fresh_date_str}</pubDate>
+                <description>Bitcoin is doing great today.</description>
+            </item>
+            <item>
+                <title>Stale Article - Bitcoin consolidation</title>
+                <link>https://example.com/stale</link>
+                <pubDate>{stale_date_str}</pubDate>
+                <description>Bitcoin was doing okay two days ago.</description>
+            </item>
+        </channel>
+        </rss>
+        """.encode('utf-8')
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = rss_content
+        mock_get_request.return_value = mock_response
+
+        # Execute
+        news = fetch_asset_news("BTC/USDT", limit=10)
+
+        # Assertions
+        # Should filter out the stale article, so only 1 article is returned
+        self.assertEqual(len(news), 1)
+        self.assertEqual(news[0]["title"], "Fresh Article")
 
 if __name__ == '__main__':
     unittest.main()
