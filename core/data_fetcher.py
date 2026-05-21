@@ -22,10 +22,23 @@ def fetch_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=100):
         # Load configured exchange dynamically to bypass geographic/provider restrictions
         exchange_name = get_config("exchange_name") or os.getenv("EXCHANGE_NAME", "binance")
         exchange_class = getattr(ccxt, exchange_name.lower(), ccxt.binance)
-        exchange = exchange_class({
+        
+        exchange_config = {
             'enableRateLimit': True,
             'options': {'defaultType': 'spot'}
-        })
+        }
+        
+        # Add proxy configuration if defined in env
+        http_proxy = os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
+        https_proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+        if http_proxy or https_proxy:
+            exchange_config['proxies'] = {}
+            if http_proxy:
+                exchange_config['proxies']['http'] = http_proxy
+            if https_proxy:
+                exchange_config['proxies']['https'] = https_proxy
+                
+        exchange = exchange_class(exchange_config)
         
         # Call fetch_ohlcv
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)

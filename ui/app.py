@@ -47,6 +47,8 @@ T = {
         "sl_pct_help": "Fiyat giriş seviyesinden bu yüzde kadar düştüğünde işlem anında otomatik olarak kapatılarak zarar sınırlandırılır.",
         "tp_pct": "Take-Profit (Kâr Al) Oranı %",
         "tp_pct_help": "Fiyat giriş seviyesinden bu yüzde kadar yükseldiğinde işlem anında kapatılarak kâr realize edilir.",
+        "exchange_name": "Aktif Borsa (CCXT)",
+        "exchange_name_help": "Piyasa verilerinin çekileceği borsa (örn: binance, bybit, kraken, okx, gateio, coinbase).",
         "min_sentiment": "Min Yapay Zeka Duygu Eşiği",
         "min_sentiment_help": "Teknik sinyal oluştuktan sonra, işlemin onaylanması için gereken minimum yapay zeka duygu skoru (örn: 3).",
         "quick_actions": "⚙️ Hızlı Eylemler",
@@ -183,6 +185,8 @@ T = {
         "sl_pct_help": "If the price drops below this percentage from your entry level, the position is instantly closed to limit losses.",
         "tp_pct": "Take-Profit Percentage %",
         "tp_pct_help": "If the price rises above this percentage from your entry level, the position is instantly closed to lock in profits.",
+        "exchange_name": "Active Exchange (CCXT)",
+        "exchange_name_help": "The exchange from which market data will be fetched (e.g., binance, bybit, kraken, okx, gateio, coinbase).",
         "min_sentiment": "Min AI Sentiment Threshold",
         "min_sentiment_help": "The minimum sentiment score (e.g. 3) required from Gemini to approve and execute a trade after a technical trigger.",
         "quick_actions": "⚙️ Quick Actions",
@@ -1133,6 +1137,21 @@ if not asset_list:
 if ",".join(asset_list) != db_assets:
     save_config("selected_assets", ",".join(asset_list))
     st.sidebar.info(t("active_pairs_updated"))
+
+# Active Exchange Configuration
+env_exchange = os.getenv("EXCHANGE_NAME", "binance")
+db_exchange = get_config("exchange_name", "")
+active_exchange = db_exchange if db_exchange else env_exchange
+
+exchange_name_input = st.sidebar.text_input(
+    t("exchange_name"),
+    value=active_exchange,
+    help=t("exchange_name_help")
+)
+
+if exchange_name_input != db_exchange:
+    save_config("exchange_name", exchange_name_input)
+    st.sidebar.info("Borsa tercihi güncellendi!" if st.session_state["lang"] == "TR" else "Exchange preference updated!")
 
 # AI Models Settings
 summarizer_model_default = os.getenv("SUMMARIZER_MODEL", "gemini-3.1-flash-lite")
