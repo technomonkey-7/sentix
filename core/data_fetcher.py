@@ -4,7 +4,7 @@ import pandas as pd
 import requests
 import xml.etree.ElementTree as ET
 import urllib.parse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import random
 import time
 from core.db import log_event, get_config
@@ -102,7 +102,7 @@ def generate_simulated_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=100):
     base_price = base_prices.get(symbol, 100.0)
     
     # Time delta based on timeframe
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     delta = timedelta(hours=1) if timeframe == "1h" else timedelta(hours=4)
     
     timestamps = []
@@ -280,7 +280,7 @@ def generate_mock_news(symbol="BTC/USDT", limit=5):
     
     random.shuffle(templates)
     mock_items = []
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     
     for i in range(min(limit, len(templates))):
         pub_time = now - timedelta(hours=i * 2)

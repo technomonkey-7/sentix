@@ -1,7 +1,7 @@
 import sqlite3
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data.db")
 
@@ -123,7 +123,7 @@ def init_db():
 
 def log_event(level, module, message):
     """Logs an event into the SQLite logs table and prints it to stdout."""
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
     try:
         print(f"[{timestamp}] [{level}] [{module}] {message}", flush=True)
     except UnicodeEncodeError:
@@ -206,7 +206,7 @@ def record_trade(asset, side, price, amount, trade_type, sentiment_score=None, r
     """Records a simulated paper trade and updates portfolio balances."""
     conn = get_connection()
     cursor = conn.cursor()
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
 
     # Save to trades table
     cursor.execute("""
@@ -299,7 +299,7 @@ def save_ai_run(asset, news_digest, sentiment_score, reason):
     """Saves a Gemini AI model run for analytical auditing."""
     conn = get_connection()
     cursor = conn.cursor()
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
     cursor.execute("""
         INSERT INTO ai_runs (timestamp, asset, news_digest, sentiment_score, reason)
         VALUES (?, ?, ?, ?, ?)

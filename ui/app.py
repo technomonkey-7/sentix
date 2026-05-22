@@ -1503,7 +1503,7 @@ if worker_heartbeat_str:
         heartbeat_time = datetime.fromisoformat(worker_heartbeat_str)
         # Use timezone-aware comparison to avoid deprecation warnings
         if heartbeat_time.tzinfo is None:
-            time_diff = (datetime.utcnow() - heartbeat_time).total_seconds()
+            time_diff = (datetime.now(timezone.utc).replace(tzinfo=None) - heartbeat_time).total_seconds()
         else:
             time_diff = (datetime.now(timezone.utc) - heartbeat_time).total_seconds()
         # Increased threshold to 180s to prevent false offline alerts during long analysis runs
