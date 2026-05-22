@@ -141,6 +141,10 @@ def call_gemini_with_retry(func, *args, **kwargs):
                         continue
                     else:
                         raise e
+                else:
+                    # Key rotated. Wait a brief duration before retrying.
+                    log_event("INFO", "AI_MODULE", "Sleeping 2 seconds before retrying with rotated API key...")
+                    time.sleep(2)
                 last_error = e
             else:
                 log_event("ERROR", "AI_MODULE", f"Gemini API call failed with error: {e}")

@@ -150,8 +150,9 @@ class TestSentixOptimization(unittest.TestCase):
     # ==========================================
     # 2. KEY ROTATION & RETRY LOGIC TESTS
     # ==========================================
+    @patch('ai.sentiment_analyzer.time.sleep')
     @patch('ai.sentiment_analyzer.load_api_keys')
-    def test_key_rotation_on_429(self, mock_load_keys):
+    def test_key_rotation_on_429(self, mock_load_keys, mock_sleep):
         # Mock keys file to return three fake keys
         mock_load_keys.return_value = ["KEY_A", "KEY_B", "KEY_C"]
         
@@ -182,9 +183,14 @@ class TestSentixOptimization(unittest.TestCase):
         self.assertEqual(res.text, "Success!")
         # Current index should remain at the successful key (index 2 / KEY_C)
         self.assertEqual(sa._current_key_idx, 2)
+        
+        # Verify sleep was called twice with 2 seconds
+        self.assertEqual(mock_sleep.call_count, 2)
+        mock_sleep.assert_has_calls([unittest.mock.call(2), unittest.mock.call(2)])
 
+    @patch('ai.sentiment_analyzer.time.sleep')
     @patch('ai.sentiment_analyzer.load_api_keys')
-    def test_key_rotation_all_fail(self, mock_load_keys):
+    def test_key_rotation_all_fail(self, mock_load_keys, mock_sleep):
         # Mock keys file
         mock_load_keys.return_value = ["KEY_A", "KEY_B"]
         
@@ -196,6 +202,10 @@ class TestSentixOptimization(unittest.TestCase):
             sa.call_gemini_with_retry(mock_generate)
             
         self.assertIn("ResourceExhausted error on KEY_", str(context.exception))
+        
+        # Verify sleep was called three times with 2 seconds
+        self.assertEqual(mock_sleep.call_count, 3)
+        mock_sleep.assert_has_calls([unittest.mock.call(2), unittest.mock.call(2), unittest.mock.call(2)])
 
     # ==========================================
     # 3. STRUCTURED BATCH SENTIMENT ANALYSIS
