@@ -12,6 +12,8 @@ services:
       # ProtonVPN or NordVPN credentials (set VPN_USER and VPN_PASSWORD in .env)
       - OPENVPN_USER=${VPN_USER:-your_openvpn_username_here}
       - OPENVPN_PASSWORD=${VPN_PASSWORD:-your_openvpn_password_here}
+      # If using WireGuard protocol
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY:-}
       - FREE_ONLY=${VPN_FREE_ONLY:-on}
       - SERVER_COUNTRIES=${VPN_COUNTRIES:-Netherlands}
       - HTTPPROXY=on
