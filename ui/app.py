@@ -1526,6 +1526,21 @@ if not is_worker_active:
     </div>
     """, unsafe_allow_html=True)
 
+# 1b. Show warning if VPN is disconnected
+vpn_status = get_config("vpn_status")
+if vpn_status == "disconnected":
+    st.markdown(f"""
+    <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid #EF4444; border-radius: 12px; padding: 1.2rem; margin-bottom: 1.5rem; box-shadow: 0 0 15px rgba(239, 68, 68, 0.15);">
+        <h3 style="margin: 0; color: #EF4444; font-size: 1.15rem; font-weight: 700;">
+            ⚠️ VPN Bağlantısı Kesildi! / VPN Connection Down!
+        </h3>
+        <p style="margin: 0.3rem 0 0 0; color: #E2E8F0; font-size: 0.85rem;">
+            Binance bağlantısı kesildi. Algoritmik işlemler ve SL/TP takibi askıya alındı. Bağlantı sağlandığında otomatik olarak devam edecektir.
+            / Connection to Binance is lost. Algorithmic trading and SL/TP guardian checks are suspended. Will resume once connection is established.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
 # 2. Show active positions PnL cards
 if active_positions_list:
     # Build glowing status indicator for all active holdings
@@ -2024,6 +2039,12 @@ with tab_b:
     if btn_run:
         with st.spinner(t("manual_spinner")):
             try:
+                # First check VPN connection
+                from core.data_fetcher import check_vpn_connection
+                if not check_vpn_connection():
+                    st.error("❌ VPN Bağlantısı Yok! Manuel analiz yapılamıyor. Lütfen VPN bağlantınızı kontrol edin. / VPN connection is down! Cannot perform manual analysis.")
+                    st.stop()
+                    
                 # 1. Fetch live CCXT candles
                 m_candles_df = fetch_ohlcv(symbol=manual_pair, timeframe="1h", limit=100)
                 m_candles_df = calculate_indicators(m_candles_df)

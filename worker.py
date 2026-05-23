@@ -680,6 +680,14 @@ def main():
         save_config("worker_heartbeat", datetime.now(timezone.utc).isoformat())
     except Exception:
         pass
+    
+    from core.data_fetcher import check_vpn_connection
+    while not check_vpn_connection():
+        log_event("WARNING", "WORKER", "⚠️ VPN connection is down on startup! Pausing all operations. Retrying VPN check in 15 seconds...")
+        save_config("vpn_status", "disconnected")
+        time.sleep(15)
+        
+    save_config("vpn_status", "connected")
     run_worker_cycle()
     
     # Dual-speed continuous loop
@@ -693,6 +701,15 @@ def main():
             except Exception:
                 pass
                 
+            # Check VPN status
+            if not check_vpn_connection():
+                log_event("WARNING", "WORKER", "⚠️ VPN connection is down! Pausing all trading operations and SL/TP guardian checks. Retrying VPN check in 15 seconds...")
+                save_config("vpn_status", "disconnected")
+                time.sleep(15)
+                continue
+                
+            save_config("vpn_status", "connected")
+            
             # Always run fast SL/TP guardian check
             run_sltp_guardian()
             

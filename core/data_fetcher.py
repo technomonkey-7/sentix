@@ -311,6 +311,42 @@ def generate_mock_news(symbol="BTC/USDT", limit=5):
         
     return mock_items
 
+def check_vpn_connection():
+    """
+    Checks if the VPN / Network connection is active by making requests using the configured proxy.
+    Checks if Binance API is reachable. Returns True if connected, False otherwise.
+    """
+    # Resolve proxy configuration if defined in env
+    http_proxy = os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
+    https_proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+    proxies = {}
+    if http_proxy:
+        proxies['http'] = http_proxy
+    if https_proxy:
+        proxies['https'] = https_proxy
+
+    # Try reaching public IP API first to show current IP in logs
+    ip_str = "Unknown"
+    try:
+        resp_ip = requests.get("https://httpbin.org/ip", proxies=proxies, timeout=5)
+        if resp_ip.status_code == 200:
+            ip_str = resp_ip.json().get("origin", "Unknown")
+    except Exception:
+        pass
+
+    # Now test actual Binance connectivity
+    try:
+        resp = requests.get("https://api.binance.com/api/v3/ping", proxies=proxies, timeout=5)
+        if resp.status_code == 200:
+            log_event("SUCCESS", "VPN_CHECK", f"VPN / Network Connection is ACTIVE. Public IP: {ip_str}")
+            return True
+        else:
+            log_event("WARNING", "VPN_CHECK", f"Binance ping returned non-200 status: {resp.status_code}. Public IP: {ip_str}")
+            return False
+    except Exception as e:
+        log_event("ERROR", "VPN_CHECK", f"VPN / Connection check FAILED: Binance is unreachable (IP: {ip_str}). Error: {e}")
+        return False
+
 if __name__ == "__main__":
     # Mini test block
     df = fetch_ohlcv("BTC/USDT", "1h", limit=5)

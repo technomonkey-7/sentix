@@ -7,13 +7,13 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:
-      - VPN_SERVICE_PROVIDER=protonvpn
-      - VPN_TYPE=openvpn
-      # ProtonVPN OpenVPN Kullanıcı Adı ve Şifreniz (ProtonVPN panelindeki Account -> OpenVPN credentials kısmından alınır)
-      - OPENVPN_USER=your_openvpn_username_here
-      - OPENVPN_PASSWORD=your_openvpn_password_here
-      - FREE_ONLY=on
-      - SERVER_COUNTRIES=Netherlands
+      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER:-protonvpn}
+      - VPN_TYPE=${VPN_TYPE:-openvpn}
+      # ProtonVPN or NordVPN credentials (set VPN_USER and VPN_PASSWORD in .env)
+      - OPENVPN_USER=${VPN_USER:-your_openvpn_username_here}
+      - OPENVPN_PASSWORD=${VPN_PASSWORD:-your_openvpn_password_here}
+      - FREE_ONLY=${VPN_FREE_ONLY:-on}
+      - SERVER_COUNTRIES=${VPN_COUNTRIES:-Netherlands}
       - HTTPPROXY=on
     ports:
       - "8888:8888/tcp" # HTTP Proxy
