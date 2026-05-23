@@ -51,26 +51,34 @@ def fetch_realtime_price(symbol):
     Falls back to the latest DB candle close price if the ticker call fails.
     This is critical for accurate SL/TP monitoring.
     """
-    try:
-        exchange = _get_exchange()
-        ticker = exchange.fetch_ticker(symbol)
-        price = float(ticker['last'])
-        return price
-    except Exception as e:
-        log_event("WARNING", "WORKER", f"Real-time ticker fetch failed for {symbol}: {e}. Falling back to DB candle price.")
-        # Fallback to latest DB candle close
-        from core.db import get_connection
+    max_retries = 3
+    retry_delay = 1.0
+    
+    for attempt in range(max_retries):
         try:
-            conn = get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT close FROM candles WHERE asset = ? ORDER BY timestamp DESC LIMIT 1", (symbol,))
-            row = cursor.fetchone()
-            conn.close()
-            if row:
-                return float(row[0])
-        except Exception:
-            pass
-        return None
+            exchange = _get_exchange()
+            ticker = exchange.fetch_ticker(symbol)
+            price = float(ticker['last'])
+            return price
+        except Exception as e:
+            log_event("WARNING", "WORKER", f"Attempt {attempt+1} failed to fetch real-time ticker for {symbol}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                log_event("WARNING", "WORKER", f"Real-time ticker fetch failed for {symbol} after {max_retries} attempts. Falling back to DB candle price.")
+                # Fallback to latest DB candle close
+                from core.db import get_connection
+                try:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT close FROM candles WHERE asset = ? ORDER BY timestamp DESC LIMIT 1", (symbol,))
+                    row = cursor.fetchone()
+                    conn.close()
+                    if row:
+                        return float(row[0])
+                except Exception:
+                    pass
+                return None
 
 def calculate_total_nav(portfolio):
     """
@@ -339,6 +347,15 @@ def _execute_cycle_logic(force=False):
                 log_event("INFO", "WORKER", f"Performing Double-Check Math Filter for {asset} on 4h timeframe...")
                 candles_df_4h = fetch_ohlcv(symbol=asset, timeframe="4h", limit=100)
                 if candles_df_4h is not None and not candles_df_4h.empty:
+                    # Check if 4h candles are simulated
+                    is_4h_simulated = False
+                    if '_is_simulated' in candles_df_4h.columns:
+                        is_4h_simulated = bool(candles_df_4h['_is_simulated'].iloc[0])
+                    if is_4h_simulated:
+                        log_event("WARNING", "WORKER", f"⚠️ 4h timeframe for {asset} is using SIMULATED data. Skipping trade decisions for safety.")
+                        _last_analyzed_timestamps[asset] = completed_timestamp
+                        continue
+                        
                     # Calculate indicators for 4h candles
                     candles_df_4h = calculate_indicators(candles_df_4h)
                     
@@ -381,12 +398,21 @@ def _execute_cycle_logic(force=False):
         
         # Scrape news for each candidate
         batch_input = []
+        successful_candidates = []
         for c in candidates_to_analyze:
             news = fetch_asset_news(c["asset"], limit=10)
+            if not news:
+                log_event("WARNING", "WORKER", f"Could not fetch live news for {c['asset']}. Skipping sentiment analysis for this cycle to avoid token waste.")
+                # We do NOT mark the completed candle timestamp as analyzed, so it will retry next time
+                continue
+                
             batch_input.append({
                 "symbol": c["asset"],
                 "news_items": news
             })
+            successful_candidates.append(c)
+            
+        candidates_to_analyze = successful_candidates
             
         # Call batch sentiment analyzer
         from ai.sentiment_analyzer import analyze_sentiment_batch
@@ -420,6 +446,12 @@ def _execute_cycle_logic(force=False):
                 
             sentiment_score = ai_res["sentiment_score"]
             ai_reason = ai_res["reason"]
+            is_ai_simulated = ai_res.get("is_simulated", False)
+            
+            if is_ai_simulated:
+                log_event("WARNING", "WORKER", f"⚠️ AI sentiment or news for {asset} is SIMULATED/MOCK. Skipping trade decisions for safety.")
+                _last_analyzed_timestamps[asset] = completed_timestamp
+                continue
             
             log_event("INFO", "WORKER", f"Gemini Sentiment outcome for {asset}: {sentiment_score} (Reason: '{ai_reason}')")
             

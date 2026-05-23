@@ -17,49 +17,57 @@ def fetch_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=100):
     """
     live_mode = get_config("live_mode", "false").lower() == "true"
     
-    try:
-        log_event("INFO", "DATA_FETCHER", f"Fetching {limit} candles for {symbol} ({timeframe}) from CCXT...")
-        # Load configured exchange dynamically to bypass geographic/provider restrictions
-        exchange_name = get_config("exchange_name") or os.getenv("EXCHANGE_NAME", "binance")
-        exchange_class = getattr(ccxt, exchange_name.lower(), ccxt.binance)
-        
-        exchange_config = {
-            'enableRateLimit': True,
-            'options': {'defaultType': 'spot'}
-        }
-        
-        # Add proxy configuration if defined in env
-        http_proxy = os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
-        https_proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
-        if http_proxy or https_proxy:
-            exchange_config['proxies'] = {}
-            if http_proxy:
-                exchange_config['proxies']['http'] = http_proxy
-            if https_proxy:
-                exchange_config['proxies']['https'] = https_proxy
-                
-        exchange = exchange_class(exchange_config)
-        
-        # Call fetch_ohlcv
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        
-        if not ohlcv or len(ohlcv) == 0:
-            raise ValueError("Empty candle data returned from exchange.")
+    max_retries = 3
+    retry_delay = 2.0
+    
+    for attempt in range(max_retries):
+        try:
+            log_event("INFO", "DATA_FETCHER", f"Fetching {limit} candles for {symbol} ({timeframe}) from CCXT (Attempt {attempt+1}/{max_retries})...")
+            # Load configured exchange dynamically to bypass geographic/provider restrictions
+            exchange_name = get_config("exchange_name") or os.getenv("EXCHANGE_NAME", "binance")
+            exchange_class = getattr(ccxt, exchange_name.lower(), ccxt.binance)
             
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        # Convert timestamp (ms) to ISO string or formatted string
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.strftime('%Y-%m-%d %H:%M:%S')
-        df['_is_simulated'] = False
-        log_event("SUCCESS", "DATA_FETCHER", f"Successfully fetched {len(df)} candles for {symbol}.")
-        return df
+            exchange_config = {
+                'enableRateLimit': True,
+                'options': {'defaultType': 'spot'}
+            }
+            
+            # Add proxy configuration if defined in env
+            http_proxy = os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
+            https_proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+            if http_proxy or https_proxy:
+                exchange_config['proxies'] = {}
+                if http_proxy:
+                    exchange_config['proxies']['http'] = http_proxy
+                if https_proxy:
+                    exchange_config['proxies']['https'] = https_proxy
+                    
+            exchange = exchange_class(exchange_config)
+            
+            # Call fetch_ohlcv
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            
+            if not ohlcv or len(ohlcv) == 0:
+                raise ValueError("Empty candle data returned from exchange.")
+                
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            # Convert timestamp (ms) to ISO string or formatted string
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.strftime('%Y-%m-%d %H:%M:%S')
+            df['_is_simulated'] = False
+            log_event("SUCCESS", "DATA_FETCHER", f"Successfully fetched {len(df)} candles for {symbol} on attempt {attempt+1}.")
+            return df
 
-    except Exception as e:
-        if live_mode:
-            log_event("ERROR", "DATA_FETCHER", f"CCXT fetch FAILED for {symbol} in LIVE MODE: {e}. Refusing to fall back to simulated data.")
-            raise RuntimeError(f"LIVE MODE: Cannot fetch real market data for {symbol}. API error: {e}")
-        
-        log_event("WARNING", "DATA_FETCHER", f"CCXT fetch failed for {symbol}: {e}. Generating simulated fallback data (NOT REAL PRICES).")
-        return generate_simulated_ohlcv(symbol, timeframe, limit)
+        except Exception as e:
+            log_event("WARNING", "DATA_FETCHER", f"Attempt {attempt+1} failed to fetch candles for {symbol}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                if live_mode:
+                    log_event("ERROR", "DATA_FETCHER", f"CCXT fetch FAILED for {symbol} in LIVE MODE after {max_retries} attempts: {e}. Refusing to fall back to simulated data.")
+                    raise RuntimeError(f"LIVE MODE: Cannot fetch real market data for {symbol}. API error: {e}")
+                
+                log_event("WARNING", "DATA_FETCHER", f"CCXT fetch failed for {symbol} after {max_retries} attempts. Generating simulated fallback data (NOT REAL PRICES).")
+                return generate_simulated_ohlcv(symbol, timeframe, limit)
 
 def generate_simulated_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=100):
     """
@@ -194,78 +202,87 @@ def fetch_asset_news(symbol="BTC/USDT", limit=10):
     
     url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
     
-    log_event("INFO", "DATA_FETCHER", f"Scraping live RSS news (last {hours}h) for {symbol} using Google News feed...")
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        
-        if response.status_code != 200:
-            raise requests.RequestException(f"Invalid HTTP status: {response.status_code}")
+    max_retries = 3
+    retry_delay = 2.0
+    
+    for attempt in range(max_retries):
+        log_event("INFO", "DATA_FETCHER", f"Scraping live RSS news (last {hours}h) for {symbol} using Google News feed (Attempt {attempt+1}/{max_retries})...")
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            response = requests.get(url, headers=headers, timeout=15)
             
-        root = ET.fromstring(response.content)
-        import email.utils
-        from datetime import datetime, timezone
-        
-        all_items = []
-        for item in root.findall('.//item'):
-            title = item.find('title').text if item.find('title') is not None else ""
-            link = item.find('link').text if item.find('link') is not None else ""
-            pub_date = item.find('pubDate').text if item.find('pubDate') is not None else ""
-            description = item.find('description').text if item.find('description') is not None else ""
-            
-            # Clean up the RSS-injected source information from the title if present
-            if " - " in title:
-                title = title.rsplit(" - ", 1)[0]
+            if response.status_code != 200:
+                raise requests.RequestException(f"Invalid HTTP status: {response.status_code}")
                 
-            # Parse publication date for sorting
-            parsed_dt = None
-            if pub_date:
-                try:
-                    parsed_dt = email.utils.parsedate_to_datetime(pub_date)
-                except Exception:
-                    pass
+            root = ET.fromstring(response.content)
+            import email.utils
+            from datetime import datetime, timezone
             
-            # Filter by maximum news age
-            if parsed_dt:
-                if parsed_dt.tzinfo is None:
-                    parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
-                now_utc = datetime.now(timezone.utc)
-                age = now_utc - parsed_dt
-                if age > timedelta(hours=hours):
-                    continue
-            else:
-                # If we couldn't parse the date, skip it to ensure freshness guarantee
-                continue
+            all_items = []
+            for item in root.findall('.//item'):
+                title = item.find('title').text if item.find('title') is not None else ""
+                link = item.find('link').text if item.find('link') is not None else ""
+                pub_date = item.find('pubDate').text if item.find('pubDate') is not None else ""
+                description = item.find('description').text if item.find('description') is not None else ""
+                
+                # Clean up the RSS-injected source information from the title if present
+                if " - " in title:
+                    title = title.rsplit(" - ", 1)[0]
                     
-            all_items.append({
-                "title": title,
-                "link": link,
-                "pub_date": pub_date,
-                "parsed_dt": parsed_dt,
-                "description": description
-            })
+                # Parse publication date for sorting
+                parsed_dt = None
+                if pub_date:
+                    try:
+                        parsed_dt = email.utils.parsedate_to_datetime(pub_date)
+                    except Exception:
+                        pass
+                
+                # Filter by maximum news age
+                if parsed_dt:
+                    if parsed_dt.tzinfo is None:
+                        parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+                    now_utc = datetime.now(timezone.utc)
+                    age = now_utc - parsed_dt
+                    if age > timedelta(hours=hours):
+                        continue
+                else:
+                    # If we couldn't parse the date, skip it to ensure freshness guarantee
+                    continue
+                        
+                all_items.append({
+                    "title": title,
+                    "link": link,
+                    "pub_date": pub_date,
+                    "parsed_dt": parsed_dt,
+                    "description": description
+                })
+                
+            # Sort news_items by parsed_dt in descending order (newest first)
+            all_items.sort(key=lambda x: x["parsed_dt"], reverse=True)
             
-        # Sort news_items by parsed_dt in descending order (newest first)
-        all_items.sort(key=lambda x: x["parsed_dt"], reverse=True)
-        
-        # Format the final limited list
-        news_items = []
-        for item in all_items[:limit]:
-            news_items.append({
-                "title": item["title"],
-                "link": item["link"],
-                "pub_date": item["pub_date"],
-                "description": item["description"]
-            })
+            # Format the final limited list
+            news_items = []
+            for item in all_items[:limit]:
+                news_items.append({
+                    "title": item["title"],
+                    "link": item["link"],
+                    "pub_date": item["pub_date"],
+                    "description": item["description"],
+                    "_is_simulated": False
+                })
+                
+            log_event("SUCCESS", "DATA_FETCHER", f"Scraped {len(news_items)} chronologically sorted news articles for {symbol} on attempt {attempt+1}.")
+            return news_items
             
-        log_event("SUCCESS", "DATA_FETCHER", f"Scraped {len(news_items)} chronologically sorted news articles for {symbol}.")
-        return news_items
-        
-    except Exception as e:
-        log_event("WARNING", "DATA_FETCHER", f"Failed to scrape RSS news for {symbol}: {e}. Returning mock news database.")
-        return generate_mock_news(symbol, limit)
+        except Exception as e:
+            log_event("WARNING", "DATA_FETCHER", f"Attempt {attempt+1} failed to scrape news for {symbol}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                log_event("ERROR", "DATA_FETCHER", f"Failed to scrape RSS news for {symbol} after {max_retries} attempts: {e}. News fetching failed.")
+                return None
 
 def generate_mock_news(symbol="BTC/USDT", limit=5):
     """Generates synthetic news items in case of RSS feed request errors or network issues."""
@@ -288,7 +305,8 @@ def generate_mock_news(symbol="BTC/USDT", limit=5):
             "title": templates[i]["title"],
             "link": "https://example.com/crypto-news",
             "pub_date": pub_time.strftime("%a, %d %b %Y %H:%M:%S GMT"),
-            "description": templates[i]["description"]
+            "description": templates[i]["description"],
+            "_is_simulated": True
         })
         
     return mock_items

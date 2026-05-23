@@ -16,7 +16,7 @@ load_dotenv()
 # Structured output Pydantic schemas
 class DigestResult(BaseModel):
     symbol: str = Field(description="The trading symbol, e.g., BTC/USDT")
-    digest: str = Field(description="A concise 2-paragraph news digest highlighting major developments, regulatory issues, and macroeconomic trends.")
+    digest: str = Field(description="A detailed, comprehensive multi-paragraph news digest highlighting key developments, specific news details, regulatory impacts, and macroeconomic factors.")
 
 class BatchDigestResponse(BaseModel):
     digests: List[DigestResult]
@@ -185,7 +185,8 @@ def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_ov
                 "symbol": c["symbol"],
                 "sentiment_score": sim["sentiment_score"],
                 "reason": sim["reason"],
-                "digest": sim["digest"]
+                "digest": sim["digest"],
+                "is_simulated": True
             })
         return results
 
@@ -204,7 +205,8 @@ def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_ov
                 "symbol": symbol,
                 "sentiment_score": 0,
                 "reason": "No recent news articles were found to analyze.",
-                "digest": "No recent news articles were found to analyze."
+                "digest": "No recent news articles were found to analyze.",
+                "is_simulated": True
             })
         else:
             valid_candidates.append(c)
@@ -225,9 +227,14 @@ def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_ov
         news_blocks.append(f"Asset Symbol: {symbol}\nRaw news:\n{news_text}")
         
     combined_news_prompt = f"""
-    You are a highly efficient assistant for a quantitative trading platform. 
-    Your task is to analyze, clean, filter out noise or spam, and synthesize a concise 2-paragraph news digest for each cryptocurrency asset.
-    Highlight the major positive developments, regulatory issues, and macroeconomic trends contained in the articles.
+    You are a highly detailed and precise quantitative research assistant for a trading platform. 
+    Your task is to analyze, clean, filter out noise or spam, and synthesize a detailed, comprehensive multi-paragraph news digest for each cryptocurrency asset.
+    
+    CRITICAL INSTRUCTIONS:
+    - Do NOT make the digest too short, brief, or generic. Other quantitative models rely on the richness of this digest to perform sentiment analysis.
+    - Provide a thorough coverage of major positive developments, technological updates, institutional inflows, regulatory changes, and macroeconomic factors.
+    - Include specific facts, percentages, named entities, and dates where available in the raw articles.
+    - Ensure both positive opportunities and potential downside risks/worries are clearly articulated in detail.
     
     Here is the raw news by symbol:
     
@@ -309,11 +316,16 @@ def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_ov
             # Save run to SQLite audit log
             save_ai_run(symbol, digest, score, reason)
             
+            # Check if this candidate's news was simulated
+            news_items = next((c.get("news_items", []) for c in valid_candidates if c["symbol"] == symbol), [])
+            has_simulated_news = any(item.get("_is_simulated", False) for item in news_items)
+            
             results.append({
                 "symbol": symbol,
                 "sentiment_score": score,
                 "reason": reason,
-                "digest": digest
+                "digest": digest,
+                "is_simulated": has_simulated_news
             })
             received_symbols.add(symbol)
             
@@ -321,11 +333,14 @@ def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_ov
         for c in valid_candidates:
             symbol = c["symbol"]
             if symbol not in received_symbols:
+                news_items = c.get("news_items", [])
+                has_simulated_news = any(item.get("_is_simulated", False) for item in news_items)
                 results.append({
                     "symbol": symbol,
                     "sentiment_score": 0,
                     "reason": "Model response did not return results for this asset. Defaulted to neutral.",
-                    "digest": digest_map.get(symbol, "")
+                    "digest": digest_map.get(symbol, ""),
+                    "is_simulated": has_simulated_news
                 })
                 
         log_event("SUCCESS", "AI_MODULE", "Step 2 Complete. Batch sentiment evaluated.")
@@ -343,7 +358,8 @@ def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_ov
                 "symbol": symbol,
                 "sentiment_score": sim["sentiment_score"],
                 "reason": sim["reason"],
-                "digest": sim["digest"]
+                "digest": sim["digest"],
+                "is_simulated": True
             })
         return results
 
@@ -355,7 +371,7 @@ def analyze_sentiment(symbol="BTC/USDT", news_items=None, sentiment_model_overri
     results = analyze_sentiment_batch([{"symbol": symbol, "news_items": news_items}], sentiment_model_override)
     if results:
         return results[0]
-    return {"sentiment_score": 0, "reason": "Sentiment analysis failed.", "digest": ""}
+    return {"sentiment_score": 0, "reason": "Sentiment analysis failed.", "digest": "", "is_simulated": True}
 
 def run_simulated_sentiment(symbol="BTC/USDT", news_items=None):
     """
