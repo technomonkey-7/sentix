@@ -692,6 +692,8 @@ def main():
     
     # Dual-speed continuous loop
     last_analysis_time = time.time()
+    last_vpn_check_time = time.time()
+    vpn_connected = True
     
     while True:
         try:
@@ -701,22 +703,32 @@ def main():
             except Exception:
                 pass
                 
-            # Check VPN status
-            if not check_vpn_connection():
-                log_event("WARNING", "WORKER", "⚠️ VPN connection is down! Pausing all trading operations and SL/TP guardian checks. Retrying VPN check in 15 seconds...")
-                save_config("vpn_status", "disconnected")
-                time.sleep(15)
-                continue
+            # Determine if we should check VPN
+            now = time.time()
+            elapsed_analysis = now - last_analysis_time
+            should_run_analysis = (elapsed_analysis >= analysis_interval)
+            
+            # Check VPN if disconnected, if 5 minutes elapsed, or if about to run analysis
+            should_check_vpn = (not vpn_connected) or (now - last_vpn_check_time >= 300) or should_run_analysis
+            
+            if should_check_vpn:
+                vpn_connected = check_vpn_connection()
+                last_vpn_check_time = now
                 
-            save_config("vpn_status", "connected")
+                if not vpn_connected:
+                    log_event("WARNING", "WORKER", "⚠️ VPN connection is down! Pausing all trading operations and SL/TP guardian checks. Retrying VPN check in 15 seconds...")
+                    save_config("vpn_status", "disconnected")
+                    time.sleep(15)
+                    continue
+                    
+                save_config("vpn_status", "connected")
             
             # Always run fast SL/TP guardian check
             run_sltp_guardian()
             
             # Run full analysis cycle at the configured (slower) interval
-            elapsed = time.time() - last_analysis_time
-            if elapsed >= analysis_interval:
-                log_event("INFO", "WORKER", f"Running full analysis cycle (elapsed: {elapsed:.0f}s)...")
+            if should_run_analysis:
+                log_event("INFO", "WORKER", f"Running full analysis cycle (elapsed: {elapsed_analysis:.0f}s)...")
                 run_worker_cycle()
                 last_analysis_time = time.time()
             
