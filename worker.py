@@ -65,6 +65,11 @@ def fetch_realtime_price(symbol):
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             else:
+                live_mode = (get_config("live_mode") or os.getenv("LIVE_MODE", "false")).lower() == "true"
+                if live_mode:
+                    log_event("WARNING", "WORKER", f"Real-time ticker fetch failed for {symbol} in LIVE MODE. Refusing database price fallback.")
+                    return None
+
                 log_event("WARNING", "WORKER", f"Real-time ticker fetch failed for {symbol} after {max_retries} attempts. Falling back to DB candle price.")
                 # Fallback to latest DB candle close
                 from core.db import get_connection
@@ -234,7 +239,15 @@ def _execute_cycle_logic(force=False):
             
             # Use real-time ticker price for SL/TP monitoring
             realtime_price = fetch_realtime_price(asset)
-            current_price = realtime_price if realtime_price else candle_close_price
+            live_mode = (get_config("live_mode") or os.getenv("LIVE_MODE", "false")).lower() == "true"
+            if realtime_price is None:
+                if live_mode:
+                    log_event("WARNING", "WORKER", f"Skipping SL/TP check for {asset} in cycle because real-time price fetch failed.")
+                    current_price = None
+                else:
+                    current_price = candle_close_price
+            else:
+                current_price = realtime_price
             
             # Log verbose mathematical descriptions
             rsi_val = completed_candle.get("rsi")
@@ -255,15 +268,15 @@ def _execute_cycle_logic(force=False):
             else:
                 log_event("INFO", "MATH", f"{asset} - MACD: Veri yetersiz")
                 
-            if ema_val is not None:
+            if ema_val is not None and current_price is not None:
                 ema_diff_pct = ((current_price - ema_val) / ema_val) * 100
                 log_event("INFO", "MATH", f"{asset} - EMA 20: ${ema_val:.2f}, Fiyat: ${current_price:.2f} (Eşik farkı: %{ema_diff_pct:+.2f})")
             else:
-                log_event("INFO", "MATH", f"{asset} - EMA 20: Veri yetersiz")
+                log_event("INFO", "MATH", f"{asset} - EMA 20: Veri veya fiyat yetersiz")
             
             # ---------------- RISK CHECK: STOP LOSS & TAKE PROFIT MONITORING ----------------
             active_pos = get_active_position(asset)
-            if active_pos:
+            if active_pos and current_price is not None:
                 sl_val = active_pos.get("stop_loss")
                 tp_val = active_pos.get("take_profit")
                 buy_price = active_pos.get("price")
@@ -666,6 +679,8 @@ def main():
         save_config("fee_pct", "0.001")
     if not get_config("news_freshness_hours"):
         save_config("news_freshness_hours", "24")
+    if not get_config("live_mode"):
+        save_config("live_mode", os.getenv("LIVE_MODE", "false"))
 
     log_event("INFO", "WORKER", "Background worker initialized with dual-loop architecture.")
     

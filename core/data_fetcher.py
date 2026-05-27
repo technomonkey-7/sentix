@@ -15,7 +15,7 @@ def fetch_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=100):
     In LIVE_MODE (configurable), API failures raise exceptions instead of falling back to simulated data.
     In simulation mode, provides automatic fallback to synthetic data if network fails.
     """
-    live_mode = get_config("live_mode", "false").lower() == "true"
+    live_mode = (get_config("live_mode") or os.getenv("LIVE_MODE", "false")).lower() == "true"
     
     max_retries = 3
     retry_delay = 2.0

@@ -151,9 +151,18 @@ def log_event(level, module, message):
             pass
 
 def save_candles(candles_list):
-    """Saves a batch of candle data into the database."""
+    """Saves a batch of candle data into the database, clearing old ones first to prevent mixing simulated/real data."""
+    if not candles_list:
+        return
+    asset = candles_list[0]['asset']
+    interval = candles_list[0]['interval']
+    
     conn = get_connection()
     cursor = conn.cursor()
+    
+    # Clear existing candles for this asset and interval to prevent mixing simulated/real candles
+    cursor.execute("DELETE FROM candles WHERE asset = ? AND interval = ?", (asset, interval))
+    
     for c in candles_list:
         cursor.execute("""
         INSERT OR REPLACE INTO candles (

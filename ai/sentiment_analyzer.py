@@ -163,7 +163,7 @@ def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_ov
     if not candidates:
         return []
 
-    live_mode = get_config("live_mode", "false").lower() == "true"
+    live_mode = (get_config("live_mode") or os.getenv("LIVE_MODE", "false")).lower() == "true"
 
     try:
         test_client = get_gemini_client()
