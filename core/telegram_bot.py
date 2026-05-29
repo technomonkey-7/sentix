@@ -183,7 +183,8 @@ def process_command(text: str):
     get_config, save_config, get_portfolio, get_trades, get_logs, get_all_active_positions, get_latest_ai_run, log_event, calculate_total_nav, run_worker_cycle, check_vpn_connection = get_db_helpers()
     
     cmd_parts = text.split(maxsplit=2)
-    cmd = cmd_parts[0].lower()
+    # Strip bot username if present (e.g. /help@MyBot -> /help)
+    cmd = cmd_parts[0].lower().split('@')[0]
     
     if cmd == "/start" or cmd == "/help":
         msg = (
@@ -192,14 +193,15 @@ def process_command(text: str):
             "📈 /portfolio - Portföy durumu ve cüzdan Net Değeri (NAV)\n"
             "📦 /positions - Açık aktif spot pozisyonlar ve anlık PnL\n"
             "📜 /trades - Son 5 işlem geçmişi\n"
+            "📂 /assets - İzlenen aktif kripto birimlerini listeler\n"
             "🔒 /vpn - VPN bağlantı durumu ve IP adresi\n"
-            "🧠 /ai_status - İndikatörler ve Gemini AI durum analizi\n"
+            "🧠 /ai_status - Sadece aktif duygu skoru olan pariteleri listeler\n"
             "📝 /logs - Son 5 platform log kaydı\n"
             "🚀 /trigger - Manuel analiz döngüsünü tetikler\n"
             "⏸️ /pause - Otomatik alım-satım döngüsünü duraklatır\n"
             "▶️ /resume - Otomatik alım-satım döngüsünü başlatır\n"
-            "⚙️ /risk <yüzde> - NAV işlem büyüklüğü yüzdesini ayarlar (örn: `/risk 2.5`)\n"
-            "🛡️ /sltp <sl> <tp> - Stop-Loss ve Take-Profit oranlarını günceller (örn: `/sltp 3.0 6.0`)"
+            "⚙️ /risk `yüzde` - NAV işlem büyüklüğü yüzdesini ayarlar (örn: `/risk 2.5`)\n"
+            "🛡️ /sltp `sl` `tp` - Stop-Loss ve Take-Profit oranlarını günceller (örn: `/sltp 3.0 6.0`)"
         )
         send_telegram_message(msg)
         
@@ -327,6 +329,20 @@ def process_command(text: str):
             f"• *Proxy Sunucusu:* `{http_proxy or 'Yok'}`"
         )
         send_telegram_message(msg)
+
+    elif cmd == "/assets":
+        assets_str = get_config("selected_assets", "")
+        active_assets = [a.strip() for a in assets_str.split(",") if a.strip()]
+        
+        if not active_assets:
+            send_telegram_message("📂 *İzlenen aktif kripto birimi bulunmuyor.*")
+            return
+            
+        msg = "📂 *İzlenen Kripto Birimleri:*\n\n"
+        for idx, asset in enumerate(active_assets, 1):
+            msg += f"{idx}. `{asset}`\n"
+            
+        send_telegram_message(msg)
         
     elif cmd == "/ai_status":
         assets_str = get_config("selected_assets", "")
@@ -340,7 +356,13 @@ def process_command(text: str):
             f"• *Otomatik Alım-Satım:* {paused_str}\n\n"
         )
         
+        has_runs = False
         for asset in active_assets:
+            ai_run = get_latest_ai_run(asset)
+            if not ai_run:
+                continue
+            has_runs = True
+            
             from core.db import get_connection
             conn = get_connection()
             cursor = conn.cursor()
@@ -364,10 +386,7 @@ def process_command(text: str):
                 if row_dict.get('ema') is not None:
                     ema_str = f"${row_dict['ema']:,.2f}"
             
-            ai_run = get_latest_ai_run(asset)
-            ai_score = "Yok"
-            if ai_run:
-                ai_score = f"{ai_run['sentiment_score']}/10"
+            ai_score = f"{ai_run['sentiment_score']}/10"
                 
             msg += (
                 f"• *{asset}* | Son Fiyat: `{price_str}`\n"
@@ -375,6 +394,9 @@ def process_command(text: str):
                 f"  MACD: `{macd_str}`\n"
                 f"  Gemini Duygu Skoru: `{ai_score}`\n\n"
             )
+            
+        if not has_runs:
+            msg += "_Aktif yapay zeka duygu analizi kaydı bulunmuyor (Gemini henüz tetiklenmedi)._"
             
         send_telegram_message(msg)
         
