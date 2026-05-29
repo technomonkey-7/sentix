@@ -732,6 +732,42 @@ def run_sltp_guardian():
             pnl_pct = close_active_position(asset, current_price, "TAKE_PROFIT", f"TP Guardian: breached at ${tp_val:.2f}")
             log_event("SUCCESS", "SL_TP_GUARD", f"🎉 Take Profit liquidation for {asset}: PnL {pnl_pct:+.2f}%")
 
+def run_analysis_scheduler_loop():
+    """
+    Background loop that runs the market analysis cycle at the configured interval.
+    """
+    log_event("INFO", "WORKER", "Analysis scheduler thread started.")
+    last_analysis_time = 0  # Force run first cycle on startup
+    
+    while True:
+        try:
+            # Check VPN status first
+            vpn_status = get_config("vpn_status", "disconnected")
+            if vpn_status != "connected":
+                time.sleep(15)
+                continue
+                
+            # Fetch current analysis interval dynamically from DB or env
+            try:
+                analysis_interval = int(get_config("simulation_interval_seconds") or os.getenv("SIMULATION_INTERVAL_SECONDS", "300"))
+            except Exception:
+                analysis_interval = 300
+                
+            now = time.time()
+            elapsed = now - last_analysis_time
+            if last_analysis_time == 0 or elapsed >= analysis_interval:
+                log_event("INFO", "WORKER", f"Analysis thread: Running scheduled analysis cycle (elapsed: {elapsed:.0f}s)...")
+                try:
+                    run_worker_cycle()
+                except Exception as cycle_err:
+                    log_event("ERROR", "WORKER", f"Error executing analysis cycle: {cycle_err}")
+                last_analysis_time = time.time()
+                
+            time.sleep(10)  # Check every 10s if it's time to run
+        except Exception as e:
+            log_event("ERROR", "WORKER", f"Error in analysis scheduler loop: {e}")
+            time.sleep(10)
+
 def main():
     """Main worker initialization and execution loop with dual-speed architecture."""
     print("====================================================")
@@ -769,10 +805,9 @@ def main():
     log_event("INFO", "WORKER", "Background worker initialized with dual-loop architecture.")
     
     # Configurable intervals
-    analysis_interval = int(os.getenv("SIMULATION_INTERVAL_SECONDS", "300"))  # Full analysis every 5 min (was 60s)
     guardian_interval = int(os.getenv("GUARDIAN_INTERVAL_SECONDS", "30"))      # SL/TP check every 30 seconds
     
-    log_event("INFO", "WORKER", f"Analysis interval: {analysis_interval}s | SL/TP Guardian interval: {guardian_interval}s")
+    log_event("INFO", "WORKER", f"SL/TP Guardian interval: {guardian_interval}s")
     
     # Fast first tick
     try:
@@ -796,10 +831,15 @@ def main():
     except Exception as tg_err:
         log_event("ERROR", "WORKER", f"Could not start Telegram Bot listener: {tg_err}")
         
-    run_worker_cycle()
+    # Start Analysis Scheduler thread
+    try:
+        import threading
+        t = threading.Thread(target=run_analysis_scheduler_loop, daemon=True, name="AnalysisSchedulerThread")
+        t.start()
+    except Exception as sched_err:
+        log_event("ERROR", "WORKER", f"Could not start Analysis Scheduler thread: {sched_err}")
     
-    # Dual-speed continuous loop
-    last_analysis_time = time.time()
+    # Main thread continuous loop (SL/TP Guardian & VPN checks only)
     last_vpn_check_time = time.time()
     vpn_connected = True
     
@@ -813,11 +853,9 @@ def main():
                 
             # Determine if we should check VPN
             now = time.time()
-            elapsed_analysis = now - last_analysis_time
-            should_run_analysis = (elapsed_analysis >= analysis_interval)
             
-            # Check VPN if disconnected, if 5 minutes elapsed, or if about to run analysis
-            should_check_vpn = (not vpn_connected) or (now - last_vpn_check_time >= 300) or should_run_analysis
+            # Check VPN if disconnected, or if 5 minutes elapsed
+            should_check_vpn = (not vpn_connected) or (now - last_vpn_check_time >= 300)
             
             if should_check_vpn:
                 current_vpn_state = check_vpn_connection()
@@ -846,12 +884,6 @@ def main():
             
             # Always run fast SL/TP guardian check
             run_sltp_guardian()
-            
-            # Run full analysis cycle at the configured (slower) interval
-            if should_run_analysis:
-                log_event("INFO", "WORKER", f"Running full analysis cycle (elapsed: {elapsed_analysis:.0f}s)...")
-                run_worker_cycle()
-                last_analysis_time = time.time()
             
             time.sleep(guardian_interval)
             
