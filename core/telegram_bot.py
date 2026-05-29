@@ -195,7 +195,7 @@ def process_command(text: str):
             "📜 /trades - Son 5 işlem geçmişi\n"
             "📂 /assets - İzlenen aktif kripto birimlerini listeler\n"
             "🔒 /vpn - VPN bağlantı durumu ve IP adresi\n"
-            "🧠 /ai_status - Sadece aktif duygu skoru olan pariteleri listeler\n"
+            "🧠 `/ai_status` - Sadece aktif duygu skoru olan pariteleri listeler\n"
             "📝 /logs - Son 5 platform log kaydı\n"
             "🚀 /trigger - Manuel analiz döngüsünü tetikler\n"
             "⏸️ /pause - Otomatik alım-satım döngüsünü duraklatır\n"
