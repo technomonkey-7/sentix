@@ -162,6 +162,11 @@ def _execute_cycle_logic(force=False):
     6. Batches news scraping and structured Gemini API sentiment checks for all candidates in one call.
     7. Handles paper trading buy/sell executions and state saves.
     """
+    # Check if automatic bot is paused
+    if not force and get_config("bot_paused") == "true":
+        log_event("WARNING", "WORKER", "Algorithmic market analysis tick skipped because automatic trading is PAUSED. (SL/TP Guardian remains active).")
+        return
+
     log_event("INFO", "WORKER", "Starting algorithmic market analysis tick...")
     
     # 1. Fetch config settings
@@ -782,6 +787,15 @@ def main():
         time.sleep(15)
         
     save_config("vpn_status", "connected")
+    
+    # Start Telegram Bot listener thread
+    try:
+        from core.telegram_bot import start_telegram_bot, send_telegram_message
+        start_telegram_bot()
+        send_telegram_message("🟢 *Sentix Algoritmik Trading Botu başarıyla başlatıldı!* Sunucu aktif.")
+    except Exception as tg_err:
+        log_event("ERROR", "WORKER", f"Could not start Telegram Bot listener: {tg_err}")
+        
     run_worker_cycle()
     
     # Dual-speed continuous loop
@@ -806,8 +820,21 @@ def main():
             should_check_vpn = (not vpn_connected) or (now - last_vpn_check_time >= 300) or should_run_analysis
             
             if should_check_vpn:
-                vpn_connected = check_vpn_connection()
+                current_vpn_state = check_vpn_connection()
                 last_vpn_check_time = now
+                
+                # Alert on VPN state change
+                if current_vpn_state != vpn_connected:
+                    try:
+                        from core.telegram_bot import send_telegram_message
+                        if current_vpn_state:
+                            send_telegram_message("🔒 *VPN Bağlantısı Yeniden Sağlandı!* İşlemler ve koruma guardian'ı devam ediyor.")
+                        else:
+                            send_telegram_message("🚨 *VPN Bağlantısı Koptu!* Tüm trading ve pozisyon koruma işlemleri duraklatıldı.")
+                    except Exception as tg_alert_err:
+                        log_event("WARNING", "WORKER", f"Could not send VPN state change notification: {tg_alert_err}")
+                
+                vpn_connected = current_vpn_state
                 
                 if not vpn_connected:
                     log_event("WARNING", "WORKER", "⚠️ VPN connection is down! Pausing all trading operations and SL/TP guardian checks. Retrying VPN check in 15 seconds...")

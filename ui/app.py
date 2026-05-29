@@ -170,7 +170,14 @@ T = {
         "reset_settings": "⚙️ Ayarları Sıfırla",
         "reset_settings_help": "Tüm işlem parametrelerini (risk %, SL, TP, AI eşiği, fee) optimal varsayılan değerlere sıfırlar.",
         "reset_settings_success": "Tüm ayarlar optimal varsayılanlara sıfırlandı!",
-        "last_update_label": "Son Güncelleme"
+        "last_update_label": "Son Güncelleme",
+        "tg_settings": "Telegram Entegrasyonu",
+        "tg_status": "Telegram Bağlantı Durumu",
+        "tg_status_active": "🟢 AKTİF (Token ve Chat ID .env dosyasından yüklendi)",
+        "tg_status_inactive": "❌ PASİF (Token veya Chat ID .env dosyasında eksik)",
+        "tg_test_btn": "⚡ Test Mesajı Gönder",
+        "tg_test_success": "Telegram test mesajı başarıyla gönderildi!",
+        "tg_test_fail": "Test mesajı gönderme başarısız: {e}"
     },
     "EN": {
         "title": "Sentix | Premium SaaS Control Panel",
@@ -310,7 +317,14 @@ T = {
         "reset_settings": "⚙️ Reset Settings",
         "reset_settings_help": "Resets all trading parameters (risk %, SL, TP, AI threshold, fee) to optimally calculated defaults.",
         "reset_settings_success": "All settings reset to optimal defaults!",
-        "last_update_label": "Last Update"
+        "last_update_label": "Last Update",
+        "tg_settings": "Telegram Integration",
+        "tg_status": "Telegram Connection Status",
+        "tg_status_active": "🟢 ACTIVE (Token & Chat ID loaded from .env)",
+        "tg_status_inactive": "❌ INACTIVE (Token or Chat ID missing in .env)",
+        "tg_test_btn": "⚡ Send Test Message",
+        "tg_test_success": "Telegram test message sent successfully!",
+        "tg_test_fail": "Failed to send test message: {e}"
     }
 }
 
@@ -1231,6 +1245,31 @@ news_freshness_hours = st.sidebar.slider(
 )
 if str(news_freshness_hours) != get_config("news_freshness_hours"):
     save_config("news_freshness_hours", news_freshness_hours)
+
+# Telegram Bot Configuration Expander
+st.sidebar.markdown("---")
+with st.sidebar.expander(t("tg_settings"), expanded=False):
+    tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    tg_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    
+    if tg_token and tg_chat_id:
+        st.success(t("tg_status_active"))
+        
+        # Send Test Message Button
+        if st.button(t("tg_test_btn"), use_container_width=True):
+            with st.spinner("Test mesajı gönderiliyor..." if st.session_state["lang"] == "TR" else "Sending test message..."):
+                try:
+                    from core.telegram_bot import send_telegram_message
+                    success = send_telegram_message("⚡ *Sentix Telegram Test Mesajı!* Entegrasyon başarıyla doğrulandı. 🟢")
+                    if success:
+                        st.success(t("tg_test_success"))
+                    else:
+                        st.error("Gönderilemedi. Token veya Chat ID hatalı olabilir." if st.session_state["lang"] == "TR" else "Failed to send. Token or Chat ID might be invalid.")
+                except Exception as e:
+                    st.error(t("tg_test_fail", e=str(e)))
+    else:
+        st.warning(t("tg_status_inactive"))
+        st.info("Lütfen `.env` dosyasında `TELEGRAM_BOT_TOKEN` ve `TELEGRAM_CHAT_ID` değişkenlerini tanımlayın ve uygulamayı yeniden başlatın." if st.session_state["lang"] == "TR" else "Please configure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in your `.env` file and restart the application.")
 
 # Action Operations Area
 st.sidebar.markdown(f"### {t('quick_actions')}")

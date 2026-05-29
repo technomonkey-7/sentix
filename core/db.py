@@ -226,6 +226,26 @@ def record_trade(asset, side, price, amount, trade_type, sentiment_score=None, r
     conn.commit()
     conn.close()
 
+    try:
+        from core.telegram_bot import send_trade_notification
+        send_trade_notification(
+            asset=asset,
+            side=side,
+            price=price,
+            amount=amount,
+            trade_type=trade_type,
+            sentiment_score=sentiment_score,
+            reason=reason,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            pnl=pnl
+        )
+    except Exception as tg_err:
+        try:
+            print(f"Telegram notification error: {tg_err}", flush=True)
+        except Exception:
+            pass
+
 def get_active_position(asset):
     """
     Retrieves the active trade position for a given asset (is_active = 1).
