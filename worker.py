@@ -358,35 +358,56 @@ def _execute_cycle_logic(force=False):
                 
                 # ---------------- DOUBLE-CHECK MATH FILTER (4h Trend & Volume) ----------------
                 log_event("INFO", "WORKER", f"Performing Double-Check Math Filter for {asset} on 4h timeframe...")
+                is_4h_confirmed = False
+                is_volume_confirmed = False
+                double_check_reason = ""
+                
+                # 1. Verify volume on 1h candles
+                try:
+                    latest_vol_1h = float(candles_df.iloc[-2]['volume'])
+                    vol_ma_1h = float(candles_df['volume'].tail(20).mean())
+                    is_volume_confirmed = latest_vol_1h >= vol_ma_1h
+                    double_check_reason += f"Vol confirmed: {is_volume_confirmed} ({latest_vol_1h:.1f} >= MA {vol_ma_1h:.1f}). "
+                except Exception as e:
+                    log_event("WARNING", "WORKER", f"Failed to check volume for {asset}: {e}")
+                
+                # 2. Fetch 4h candles and verify trend
                 candles_df_4h = fetch_ohlcv(symbol=asset, timeframe="4h", limit=100)
                 if candles_df_4h is not None and not candles_df_4h.empty:
-                    # Check if 4h candles are simulated
                     is_4h_simulated = False
                     if '_is_simulated' in candles_df_4h.columns:
                         is_4h_simulated = bool(candles_df_4h['_is_simulated'].iloc[0])
+                    
                     if is_4h_simulated:
-                        log_event("WARNING", "WORKER", f"⚠️ 4h timeframe for {asset} is using SIMULATED data. Skipping trade decisions for safety.")
-                        _last_analyzed_timestamps[asset] = completed_timestamp
-                        continue
-                        
-                    # Calculate indicators for 4h candles
-                    candles_df_4h = calculate_indicators(candles_df_4h)
-                    
-                    from core.math_engine import confirm_with_higher_tf
-                    confirmed, double_check_reason = confirm_with_higher_tf(candles_df, candles_df_4h, trigger_side)
-                    
-                    if not confirmed:
-                        log_event("WARNING", "WORKER", f"❌ {asset} - {trigger_side} trigger REJECTED by 4h double-check filter. Reason: {double_check_reason}")
-                        # Mark this completed candle timestamp as analyzed to prevent spamming
-                        _last_analyzed_timestamps[asset] = completed_timestamp
-                        continue
+                        log_event("WARNING", "WORKER", f"⚠️ 4h timeframe for {asset} is using SIMULATED data. Defaulting 4h trend confirmation to False.")
                     else:
-                        log_event("SUCCESS", "WORKER", f"✅ {asset} - {trigger_side} trigger CONFIRMED by 4h double-check. Reason: {double_check_reason}")
+                        try:
+                            # Calculate indicators for 4h candles
+                            candles_df_4h = calculate_indicators(candles_df_4h)
+                            c_4h = candles_df_4h.iloc[-2]
+                            close_4h = float(c_4h['close'])
+                            ema_4h = float(c_4h['ema'])
+                            macd_4h = float(c_4h['macd']) if 'macd' in c_4h and c_4h['macd'] is not None else None
+                            sig_4h = float(c_4h['macd_signal']) if 'macd_signal' in c_4h and c_4h['macd_signal'] is not None else None
+                            
+                            if trigger_side == "BUY":
+                                is_4h_confirmed = close_4h > ema_4h
+                                if macd_4h is not None and sig_4h is not None:
+                                    is_4h_confirmed = is_4h_confirmed or (macd_4h > sig_4h)
+                            elif trigger_side == "SELL":
+                                is_4h_confirmed = close_4h < ema_4h
+                                if macd_4h is not None and sig_4h is not None:
+                                    is_4h_confirmed = is_4h_confirmed or (macd_4h < sig_4h)
+                                    
+                            double_check_reason += f"4h Trend confirmed: {is_4h_confirmed}."
+                        except Exception as e:
+                            log_event("WARNING", "WORKER", f"Failed to verify 4h trend for {asset}: {e}")
                 else:
-                    log_event("WARNING", "WORKER", f"Could not fetch 4h candles for {asset}. Skipping double-check for safety.")
-                    continue
+                    log_event("WARNING", "WORKER", f"Could not fetch 4h candles for {asset}. Defaulting 4h trend confirmation to False.")
                 
-                # Add to batch candidates
+                log_event("INFO", "WORKER", f"Double-Check Filter outcomes for {asset}: {double_check_reason}")
+                
+                # Add to batch candidates (No longer skipping!)
                 candidates_to_analyze.append({
                     "asset": asset,
                     "trigger_side": trigger_side,
@@ -394,7 +415,9 @@ def _execute_cycle_logic(force=False):
                     "completed_timestamp": completed_timestamp,
                     "current_price": current_price,
                     "asset_ticker": asset_ticker,
-                    "active_pos": active_pos
+                    "active_pos": active_pos,
+                    "is_4h_confirmed": is_4h_confirmed,
+                    "is_volume_confirmed": is_volume_confirmed
                 })
                 
         except Exception as asset_err:
@@ -491,8 +514,7 @@ def _execute_cycle_logic(force=False):
             is_ai_simulated = ai_res.get("is_simulated", False)
             
             if is_ai_simulated:
-                log_event("WARNING", "WORKER", f"⚠️ AI sentiment or news for {asset} is SIMULATED/MOCK. Skipping trade decisions for safety.")
-                _last_analyzed_timestamps[asset] = completed_timestamp
+                log_event("WARNING", "WORKER", f"⚠️ AI sentiment or news for {asset} is SIMULATED/MOCK. Skipping trade decisions for safety (will retry on next tick).")
                 continue
             
             log_event("INFO", "WORKER", f"Gemini Sentiment outcome for {asset}: {sentiment_score} (Reason: '{ai_reason}')")
@@ -510,13 +532,27 @@ def _execute_cycle_logic(force=False):
                     _last_analyzed_timestamps[asset] = completed_timestamp
                     continue
                     
-                # Dynamic Position Sizing
-                if sentiment_score >= sentiment_threshold:
-                    applied_risk_pct = risk_pct
-                    sizing_reason = f"Full risk size applied due to positive AI sentiment ({sentiment_score} >= threshold {sentiment_threshold})."
-                else:
-                    applied_risk_pct = risk_pct / 2.0
-                    sizing_reason = f"Half risk size applied due to neutral AI sentiment ({sentiment_score} < threshold {sentiment_threshold})."
+                # Dynamic Position Sizing (Multi-Factor Scoring)
+                is_4h_confirmed = c.get("is_4h_confirmed", False)
+                is_volume_confirmed = c.get("is_volume_confirmed", False)
+                is_news_confirmed = sentiment_score >= sentiment_threshold
+                
+                # Score calculation: base 1 point, plus 1 point for each confirmed factor
+                score_parts = 1
+                scoring_details = "Base Technical Trigger (+25% risk)"
+                
+                if is_4h_confirmed:
+                    score_parts += 1
+                    scoring_details += ", 4H Trend confirmed (+25% risk)"
+                if is_volume_confirmed:
+                    score_parts += 1
+                    scoring_details += ", Volume confirmed (+25% risk)"
+                if is_news_confirmed:
+                    score_parts += 1
+                    scoring_details += ", Positive AI Sentiment confirmed (+25% risk)"
+                    
+                applied_risk_pct = risk_pct * (score_parts / 4.0)
+                sizing_reason = f"Score: {score_parts}/4 | {scoring_details} | Applied risk: {applied_risk_pct:.2f}% of NAV"
                 
                 # Confirm paper buy execution using Cash Sizing Rule
                 trade_value = total_nav * (applied_risk_pct / 100.0)

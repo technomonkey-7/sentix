@@ -72,8 +72,6 @@ def run_test():
     tp_pct = 6.0
     sentiment_threshold = 3
     
-    # We will simulate the execution logic from worker.py for different candidates
-    
     def simulate_worker_decision(candidate, fetched_news, sa_result_batch, fetch_exception=False, sa_exception=False):
         global mock_trades_recorded, mock_positions_closed, mock_portfolio
         mock_trades_recorded = []
@@ -87,13 +85,16 @@ def run_test():
         asset_ticker = candidate["asset_ticker"]
         active_pos = candidate["active_pos"]
         
+        # Confirmation flags passed from candidate double-check
+        is_4h_confirmed = candidate.get("is_4h_confirmed", False)
+        is_volume_confirmed = candidate.get("is_volume_confirmed", False)
+        
         # 1. Scrape news logic with failsafes
         batch_input = []
         local_sentiment_overrides = {}
         
         # Simulate fetch_asset_news
         if fetch_exception:
-            # Emulate exception
             news = None
             print(f"[TEST LOG] Exception fetching news for {asset}: Mocked error")
         else:
@@ -162,14 +163,24 @@ def run_test():
                 print(f"[TEST LOG] [VETO] Technical BUY filtered out by Gemini AI. Sentiment is bearish ({sentiment_score}). Veto triggered. Reason: {ai_reason}")
                 return
                 
-            # Dynamic Sizing
-            if sentiment_score >= sentiment_threshold:
-                applied_risk_pct = risk_pct
-                sizing_reason = f"Full risk size applied due to positive AI sentiment ({sentiment_score} >= threshold {sentiment_threshold})."
-            else:
-                applied_risk_pct = risk_pct / 2.0
-                sizing_reason = f"Half risk size applied due to neutral AI sentiment ({sentiment_score} < threshold {sentiment_threshold})."
+            # Dynamic Sizing (Multi-Factor Scoring)
+            is_news_confirmed = sentiment_score >= sentiment_threshold
+            score_parts = 1
+            scoring_details = "Base Technical Trigger (+25% risk)"
+            
+            if is_4h_confirmed:
+                score_parts += 1
+                scoring_details += ", 4H Trend confirmed (+25% risk)"
+            if is_volume_confirmed:
+                score_parts += 1
+                scoring_details += ", Volume confirmed (+25% risk)"
+            if is_news_confirmed:
+                score_parts += 1
+                scoring_details += ", Positive AI Sentiment confirmed (+25% risk)"
                 
+            applied_risk_pct = risk_pct * (score_parts / 4.0)
+            sizing_reason = f"Score: {score_parts}/4 | {scoring_details} | Applied risk: {applied_risk_pct:.2f}% of NAV"
+            
             trade_value = total_nav * (applied_risk_pct / 100.0)
             trade_value = min(trade_value, usd_balance)
             
@@ -233,13 +244,11 @@ def run_test():
 
     # --- TEST CASES ---
     
-    # Reset balance
+    print("\n--- CASE 1: BUY Crossover, No Confirmations (1/4 Score -> 25% Risk) ---")
     mock_portfolio = {
         "USD": {"balance": 10000.0, "avg_entry_price": 0.0},
         "BTC": {"balance": 0.0, "avg_entry_price": 0.0}
     }
-    
-    print("\n--- CASE 1: BUY Crossover, No News Scraped (Failsafe) ---")
     candidate_1 = {
         "asset": "BTC/USDT",
         "trigger_side": "BUY",
@@ -247,42 +256,75 @@ def run_test():
         "completed_timestamp": "2026-05-27 20:00:00",
         "current_price": 60000.0,
         "asset_ticker": "BTC",
-        "active_pos": None
+        "active_pos": None,
+        "is_4h_confirmed": False,
+        "is_volume_confirmed": False
     }
+    # No news scraping (returns neutral 0 sentiment)
     simulate_worker_decision(candidate_1, fetched_news=None, sa_result_batch=[])
     assert len(mock_trades_recorded) == 1, "Should have executed buy"
-    assert mock_trades_recorded[0]["trade_type"] == "AI_HYBRID"
-    assert "Half risk size" in mock_trades_recorded[0]["reason"], "Should apply half risk for neutral news"
-    print("Result: PASS (Successfully executed with half risk size)")
+    assert "Score: 1/4" in mock_trades_recorded[0]["reason"]
+    # 25% of 2.0% risk is 0.5% NAV -> $50.00 trade size
+    assert abs(mock_portfolio["USD"]["balance"] - 9950.0) < 0.01, f"USD balance should be 9950.0 but is {mock_portfolio['USD']['balance']}"
+    print("Result: PASS (1/4 Score correctly traded with 0.5% NAV / $50.00 size)")
     
-    print("\n--- CASE 2: BUY Crossover, Extremely Bullish News (Full Size) ---")
+    print("\n--- CASE 2: BUY Crossover, All Confirmations (4/4 Score -> 100% Risk) ---")
     mock_portfolio = {
         "USD": {"balance": 10000.0, "avg_entry_price": 0.0},
         "BTC": {"balance": 0.0, "avg_entry_price": 0.0}
     }
+    candidate_all = {
+        "asset": "BTC/USDT",
+        "trigger_side": "BUY",
+        "trigger_reason": "EMA Crossover (Price broke above 20 EMA)",
+        "completed_timestamp": "2026-05-27 20:00:00",
+        "current_price": 60000.0,
+        "asset_ticker": "BTC",
+        "active_pos": None,
+        "is_4h_confirmed": True,
+        "is_volume_confirmed": True
+    }
     simulate_worker_decision(
-        candidate_1, 
+        candidate_all, 
         fetched_news=[{"title": "BTC breakout", "description": "breakout positive"}],
         sa_result_batch=[{"symbol": "BTC/USDT", "sentiment_score": 5, "reason": "Extremely positive breakouts"}]
     )
     assert len(mock_trades_recorded) == 1
-    assert "Full risk size" in mock_trades_recorded[0]["reason"], "Should apply full risk for score >= 3"
-    print("Result: PASS (Successfully executed with full risk size)")
-    
-    print("\n--- CASE 3: BUY Crossover, Bearish News (AI Veto) ---")
+    assert "Score: 4/4" in mock_trades_recorded[0]["reason"]
+    # 100% of 2.0% risk is 2.0% NAV -> $200.00 trade size
+    assert abs(mock_portfolio["USD"]["balance"] - 9800.0) < 0.01, f"USD balance should be 9800.0 but is {mock_portfolio['USD']['balance']}"
+    print("Result: PASS (4/4 Score correctly traded with 2.0% NAV / $200.00 size)")
+
+    print("\n--- CASE 3: BUY Crossover, 4H + Volume but Neutral News (3/4 Score -> 75% Risk) ---")
     mock_portfolio = {
         "USD": {"balance": 10000.0, "avg_entry_price": 0.0},
         "BTC": {"balance": 0.0, "avg_entry_price": 0.0}
     }
     simulate_worker_decision(
-        candidate_1, 
+        candidate_all, 
+        fetched_news=None, # Neutral fallback (score 0)
+        sa_result_batch=[]
+    )
+    assert len(mock_trades_recorded) == 1
+    assert "Score: 3/4" in mock_trades_recorded[0]["reason"]
+    # 75% of 2.0% risk is 1.5% NAV -> $150.00 trade size
+    assert abs(mock_portfolio["USD"]["balance"] - 9850.0) < 0.01, f"USD balance should be 9850.0 but is {mock_portfolio['USD']['balance']}"
+    print("Result: PASS (3/4 Score correctly traded with 1.5% NAV / $150.00 size)")
+    
+    print("\n--- CASE 4: BUY Crossover, Bearish News (AI Veto -> No Trade) ---")
+    mock_portfolio = {
+        "USD": {"balance": 10000.0, "avg_entry_price": 0.0},
+        "BTC": {"balance": 0.0, "avg_entry_price": 0.0}
+    }
+    simulate_worker_decision(
+        candidate_all, 
         fetched_news=[{"title": "BTC hack", "description": "systemic risk negative"}],
         sa_result_batch=[{"symbol": "BTC/USDT", "sentiment_score": -4, "reason": "Security hack concerns"}]
     )
     assert len(mock_trades_recorded) == 0, "Bearish news should veto BUY"
     print("Result: PASS (Veto successfully prevented trade)")
     
-    print("\n--- CASE 4: SELL Crossover, Bearish News (Immediate Exit) ---")
+    print("\n--- CASE 5: SELL Crossover, Bearish News (Immediate Exit) ---")
     mock_portfolio = {
         "USD": {"balance": 0.0, "avg_entry_price": 0.0},
         "BTC": {"balance": 0.1, "avg_entry_price": 60000.0}
@@ -304,7 +346,7 @@ def run_test():
     assert len(mock_positions_closed) == 1, "Should exit position"
     print("Result: PASS (Position successfully closed)")
     
-    print("\n--- CASE 5: SELL Crossover, Extremely Bullish News (Vetoed Exit) ---")
+    print("\n--- CASE 6: SELL Crossover, Extremely Bullish News (Vetoed Exit) ---")
     mock_portfolio = {
         "USD": {"balance": 0.0, "avg_entry_price": 0.0},
         "BTC": {"balance": 0.1, "avg_entry_price": 60000.0}
