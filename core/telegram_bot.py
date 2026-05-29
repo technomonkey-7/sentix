@@ -41,8 +41,8 @@ def send_telegram_message(message: str, parse_mode="Markdown") -> bool:
     if https_proxy:
         proxies['https'] = https_proxy
         
-    # Attempt sending with proxy first, then fallback to without proxy
-    for use_proxy in [True, False]:
+    # Attempt direct connection first, fallback to proxy
+    for use_proxy in [False, True]:
         try:
             resp = requests.post(url, json=payload, proxies=proxies if use_proxy else {}, timeout=10)
             if resp.status_code == 200:
@@ -102,11 +102,6 @@ def telegram_polling_loop():
     offset = None
     log_event("INFO", "TELEGRAM", "Telegram bot listener thread started.")
     
-    # Wait for VPN connectivity before attempting connection
-    while not check_vpn_connection():
-        log_event("WARNING", "TELEGRAM", "Waiting for VPN connection to initialize Telegram polling...")
-        time.sleep(10)
-        
     while True:
         token = os.getenv("TELEGRAM_BOT_TOKEN")
         if not token:
@@ -129,7 +124,7 @@ def telegram_polling_loop():
             
         try:
             resp = None
-            for use_proxy in [True, False]:
+            for use_proxy in [False, True]:
                 try:
                     resp = requests.get(url, params=params, proxies=proxies if use_proxy else {}, timeout=35)
                     if resp.status_code == 200:
@@ -484,8 +479,69 @@ def process_command(text: str):
         except ValueError:
             send_telegram_message("⚠️ *Geçersiz oran biçimi. Lütfen sayısal değerler girin.*")
             
+    elif cmd == "/vpn_logs":
+        send_telegram_message("🔒 *VPN günlükleri Docker üzerinden alınıyor...*")
+        logs = get_vpn_logs(tail=25)
+        send_telegram_message(f"🔒 *VPN Günlükleri (Son 25 Satır):*\n\n```\n{logs}\n```")
+            
     else:
         send_telegram_message("⚠️ *Bilinmeyen komut.* Yardım almak için /help yazabilirsiniz.")
+
+def get_vpn_logs(tail=20) -> str:
+    """
+    Reads the stdout/stderr logs of the Gluetun VPN container ('sentix_vpn')
+    using the Docker daemon UNIX socket.
+    """
+    import socket
+    import http.client
+    
+    # Custom HTTP connection over Unix Socket
+    class UnixHTTPConnection(http.client.HTTPConnection):
+        def __init__(self, path):
+            super().__init__('localhost')
+            self.path = path
+        def connect(self):
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.connect(self.path)
+            
+    socket_path = '/var/run/docker.sock'
+    if not os.path.exists(socket_path):
+        return f"Docker soketi ({socket_path}) bulunamadı. Lütfen docker-compose.yml dosyasında soketin monte edildiğinden emin olun."
+        
+    try:
+        conn = UnixHTTPConnection(socket_path)
+        # Tail logs
+        url = f"/containers/sentix_vpn/logs?stdout=true&stderr=true&tail={tail}"
+        conn.request('GET', url)
+        resp = conn.getresponse()
+        
+        if resp.status != 200:
+            conn.close()
+            return f"Docker API hatası: HTTP {resp.status} - {resp.reason}"
+            
+        data = resp.read()
+        conn.close()
+        
+        # Clean up Docker log stream frames
+        lines = []
+        i = 0
+        while i < len(data):
+            if i + 8 > len(data):
+                break
+            header = data[i:i+8]
+            size = int.from_bytes(header[4:8], byteorder='big')
+            if i + 8 + size > len(data):
+                line_bytes = data[i+8:]
+                lines.append(line_bytes.decode('utf-8', errors='ignore'))
+                break
+            line_bytes = data[i+8:i+8+size]
+            lines.append(line_bytes.decode('utf-8', errors='ignore'))
+            i += 8 + size
+            
+        logs_text = "".join(lines).strip()
+        return logs_text if logs_text else "VPN log kaydı bulunmuyor."
+    except Exception as e:
+        return f"Docker günlükleri çekilemedi: {e}"
 
 def start_telegram_bot():
     """

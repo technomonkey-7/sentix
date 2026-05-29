@@ -864,11 +864,18 @@ def main():
                 # Alert on VPN state change
                 if current_vpn_state != vpn_connected:
                     try:
-                        from core.telegram_bot import send_telegram_message
+                        from core.telegram_bot import send_telegram_message, get_vpn_logs
                         if current_vpn_state:
                             send_telegram_message("🔒 *VPN Bağlantısı Yeniden Sağlandı!* İşlemler ve koruma guardian'ı devam ediyor.")
                         else:
-                            send_telegram_message("🚨 *VPN Bağlantısı Koptu!* Tüm trading ve pozisyon koruma işlemleri duraklatıldı.")
+                            logs = get_vpn_logs(tail=5)
+                            alert_msg = (
+                                "🚨 *VPN Bağlantısı Koptu!*\n"
+                                "Tüm trading ve pozisyon koruma işlemleri duraklatıldı.\n\n"
+                                "*Son VPN Günlükleri (Hata Analizi):*\n"
+                                f"```\n{logs}\n```"
+                            )
+                            send_telegram_message(alert_msg)
                     except Exception as tg_alert_err:
                         log_event("WARNING", "WORKER", f"Could not send VPN state change notification: {tg_alert_err}")
                 

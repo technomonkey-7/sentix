@@ -50,6 +50,7 @@ services:
     restart: always
     volumes:
       - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - NO_PROXY=localhost,127.0.0.1
       - no_proxy=localhost,127.0.0.1
