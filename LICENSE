@@ -1,0 +1,26 @@
+Sentix Personal and Non-Commercial License Agreement (Version 1.0)
+
+Copyright (c) 2026 Sentix Developers
+
+TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION, AND MODIFICATION
+
+1. Purpose and Scope
+This License Agreement ("License") governs the use, copying, modification, and distribution of the "Sentix" algorithmic trading and news sentiment analysis platform (the "Software"). By installing, copying, or otherwise using the Software, you agree to be bound by the terms of this License.
+
+2. Grant of License
+Subject to the terms and conditions of this License, the original creator(s) of the Software hereby grant you a non-exclusive, non-transferable, royalty-free, worldwide license to:
+   a. Install, execute, and use the Software for individual, personal, educational, and non-commercial research purposes.
+   b. Modify the source code for your own personal, private use.
+
+3. Prohibitions and Commercial Restrictions
+Any commercial use, commercial exploitation, or redistribution of the Software, in whole or in part, or any derivative works based on it, is strictly prohibited. Specifically, you may NOT:
+   a. Sell, lease, rent, sub-license, distribute, or otherwise transfer the Software or its source code to third parties for monetary or commercial gain.
+   b. Use the Software to provide a service for others, including but not limited to hosting the Software as a Service (SaaS), managing trading activities for clients, or exposing API endpoints for a fee.
+   c. Use the Software within a business entity, commercial organization, investment firm, hedge fund, proprietary trading desk, or any other revenue-generating operation.
+   d. Rebrand the Software (including changing logos, names, or theme elements) and launch it, host it, or advertise it as your own proprietary product.
+
+4. Intellectual Property and Attribution
+All copyrights, trade secrets, patents, trademarks, and other intellectual property rights in and to the Software remain the sole and exclusive property of the original creator(s). Any permitted copies of the Software or derivative works must retain all original copyright notices, license texts, and attribution indicators.
+
+5. Disclaimer of Warranty
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
