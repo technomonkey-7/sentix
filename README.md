@@ -170,4 +170,4 @@ This software is licensed under the **Sentix Personal and Non-Commercial License
 ### Terms of Use:
 - **Individual/Personal Use:** You are permitted to execute, inspect, and modify the source code of this Software for private, individual, educational, and non-commercial research purposes.
 - **Commercial Restriction:** Any commercial use, redistribution, or commercialization of the Software or its derivatives is strictly prohibited. You may NOT host the software as a paid service (SaaS), manage funds for clients using this software, or rebrand and republish it as your own commercial product.
-- For full legal terms, please review the [LICENSE](file:///c:/Users/sonar/OneDrive/Desktop/Projects/sentix/LICENSE) file in the root directory.
+- For full legal terms, please review the [LICENSE](https://github.com/technomonkey-7/sentix/blob/main/LICENSE) file in the root directory.
