@@ -51,6 +51,11 @@ def fetch_ohlcv(symbol="AAPL/USD", timeframe="1h", limit=100):
             df = df_raw[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             
+            # Convert exchange timezone (e.g. New York) to local server/container timezone
+            if df['timestamp'].dt.tz is not None:
+                local_tz = datetime.now().astimezone().tzinfo
+                df['timestamp'] = df['timestamp'].dt.tz_convert(local_tz)
+            
             # If 4h timeframe is requested, resample 1h data to 4h
             if timeframe == "4h":
                 df.set_index('timestamp', inplace=True)
