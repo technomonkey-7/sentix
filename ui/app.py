@@ -463,7 +463,7 @@ def get_tradingview_html(asset, candles, trades, active_pos):
         return "<h4 style='color:#94A3B8; text-align:center;'>No candle data available</h4>"
         
     # Convert timestamps to unix epoch seconds (integer)
-    df['time'] = pd.to_datetime(df['timestamp']).astype('datetime64[ns]').astype('int64') // 10**9
+    df['time'] = pd.to_datetime(df['timestamp']).apply(lambda x: int(x.timestamp()))
     
     # Fill NaN values for JSON safety
     df = df.fillna(0)
