@@ -29,7 +29,8 @@ load_dotenv()
 
 from datetime import timezone
 # Automatically resolve system local timezone (e.g. Europe/Amsterdam or server TZ)
-ISTANBUL_TZ = datetime.now().astimezone().tzinfo
+from zoneinfo import ZoneInfo
+SERVER_TZ = ZoneInfo("Europe/Amsterdam")
 
 # Bilingual Translations Dictionary
 T = {
@@ -1394,7 +1395,7 @@ if ACCESS_PASSWORD and st.session_state.get("authenticated", False):
         st.rerun()
 
 st.sidebar.markdown("<br><hr style='border-color: rgba(255,255,255,0.05);'>", unsafe_allow_html=True)
-_now_formatted = datetime.now(ISTANBUL_TZ).strftime("%Y-%m-%d %H:%M:%S")
+_now_formatted = datetime.now(SERVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
 st.sidebar.markdown(
     "<p style='text-align: center; color: #64748B; font-size: 0.8rem;'>"
     "Sentix SaaS Platform v1.2.0<br>"
@@ -1429,10 +1430,13 @@ try:
             if "." in _ts_str:
                 _ts_str = _ts_str.split(".")[0]
             
+            from zoneinfo import ZoneInfo
+            SERVER_TZ = ZoneInfo("Europe/Amsterdam")
+            
             _dt_utc = datetime.strptime(_ts_str, "%Y-%m-%d %H:%M:%S")
             _dt_utc = _dt_utc.replace(tzinfo=timezone.utc)
-            _dt_istanbul = _dt_utc.astimezone(ISTANBUL_TZ)
-            _last_data_update = _dt_istanbul.strftime("%Y-%m-%d %H:%M:%S")
+            _dt_europe = _dt_utc.astimezone(SERVER_TZ)
+            _last_data_update = _dt_europe.strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             _last_data_update = _ts_str
 except Exception:
@@ -1515,21 +1519,36 @@ st.iframe(
     <script>
         function updateClock() {{
             var now = new Date();
-            var utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-            // Istanbul is UTC+3
-            var istanbulTime = new Date(utc + (3600000 * 3));
+            var options = {{
+                timeZone: 'Europe/Amsterdam',
+                hour12: false,
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            }};
+            var dateOptions = {{
+                timeZone: 'Europe/Amsterdam',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            }};
             
-            var hh = String(istanbulTime.getHours()).padStart(2, '0');
-            var mm = String(istanbulTime.getMinutes()).padStart(2, '0');
-            var ss = String(istanbulTime.getSeconds()).padStart(2, '0');
+            var timeStr = new Intl.DateTimeFormat('en-GB', options).format(now);
+            if (timeStr.startsWith('24')) {{
+                timeStr = '00' + timeStr.substring(2);
+            }}
             
-            var dd = String(istanbulTime.getDate()).padStart(2, '0');
-            var mo = String(istanbulTime.getMonth() + 1).padStart(2, '0');
-            var yyyy = istanbulTime.getFullYear();
+            var dateParts = new Intl.DateTimeFormat('en-GB', dateOptions).formatToParts(now);
+            var dd, mo, yyyy;
+            for (var p of dateParts) {{
+                if (p.type === 'day') dd = p.value;
+                if (p.type === 'month') mo = p.value;
+                if (p.type === 'year') yyyy = p.value;
+            }}
             
             var clockEl = document.getElementById('clock');
             if (clockEl) {{
-                clockEl.innerHTML = hh + ':' + mm + ':' + ss + ' <span class="date-val">(' + dd + '.' + mo + '.' + yyyy + ')</span>';
+                clockEl.innerHTML = timeStr + ' <span class="date-val">(' + dd + '.' + mo + '.' + yyyy + ')</span>';
             }}
         }}
         setInterval(updateClock, 1000);
@@ -2053,7 +2072,7 @@ with tab_a:
                 t_parsed = datetime.fromisoformat(t_row['timestamp'])
                 if t_parsed.tzinfo is None:
                     t_parsed = t_parsed.replace(tzinfo=timezone.utc)
-                t_parsed = t_parsed.astimezone(ISTANBUL_TZ)
+                t_parsed = t_parsed.astimezone(SERVER_TZ)
                 t_time = t_parsed.strftime("%Y-%m-%d %H:%M:%S")
             except Exception:
                 t_time = t_row['timestamp'][:19].replace('T', ' ')
@@ -2443,7 +2462,7 @@ with tab_c:
                     t_parsed = datetime.fromisoformat(l['timestamp'])
                     if t_parsed.tzinfo is None:
                         t_parsed = t_parsed.replace(tzinfo=timezone.utc)
-                    t_parsed = t_parsed.astimezone(ISTANBUL_TZ)
+                    t_parsed = t_parsed.astimezone(SERVER_TZ)
                     t_str = t_parsed.strftime("%Y-%m-%d %H:%M:%S")
                 except Exception:
                     t_str = l['timestamp'][:19]
@@ -2475,7 +2494,7 @@ with tab_c:
                     t_parsed = datetime.fromisoformat(run['timestamp'])
                     if t_parsed.tzinfo is None:
                         t_parsed = t_parsed.replace(tzinfo=timezone.utc)
-                    t_parsed = t_parsed.astimezone(ISTANBUL_TZ)
+                    t_parsed = t_parsed.astimezone(SERVER_TZ)
                     run_time_str = t_parsed.strftime("%Y-%m-%d %H:%M:%S")
                 except Exception:
                     run_time_str = run['timestamp'][:19].replace('T', ' ')
