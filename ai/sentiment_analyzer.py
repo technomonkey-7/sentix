@@ -15,16 +15,16 @@ load_dotenv()
 
 # Structured output Pydantic schemas
 class DigestResult(BaseModel):
-    symbol: str = Field(description="The trading symbol, e.g., BTC/USDT")
-    digest: str = Field(description="A detailed, comprehensive multi-paragraph news digest highlighting key developments, specific news details, regulatory impacts, and macroeconomic factors.")
+    symbol: str = Field(description="The stock trading symbol, e.g., AAPL/USD")
+    digest: str = Field(description="A detailed, comprehensive multi-paragraph news digest highlighting key developments, specific news details, regulatory/economic impacts, and macroeconomic factors.")
 
 class BatchDigestResponse(BaseModel):
     digests: List[DigestResult]
 
 class SentimentResult(BaseModel):
-    symbol: str = Field(description="The trading symbol, e.g., BTC/USDT")
-    sentiment_score: int = Field(description="Sentiment score from -10 (extremely bearish, panic, crash imminent) to 10 (extremely bullish, FOMO, massive breakout)")
-    reason: str = Field(description="A single-sentence explanation for the score based strictly on the news digest")
+    symbol: str = Field(description="The stock trading symbol, e.g., AAPL/USD")
+    sentiment_score: int = Field(description="Sentiment score from -10 (extremely bearish, earnings collapse, panic) to 10 (extremely bullish, guidance beat, strong breakout)")
+    reason: str = Field(description="A single-sentence explanation for the score based strictly on the news digest and technical trends")
 
 class BatchSentimentResponse(BaseModel):
     results: List[SentimentResult]
@@ -155,8 +155,8 @@ def call_gemini_with_retry(func, *args, **kwargs):
 
 def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_override=None) -> List[Dict[str, Any]]:
     """
-    Analyzes news sentiment for a batch of candidate symbols in a single Gemini call.
-    Each candidate is a dict: {"symbol": str, "news_items": list}
+    Analyzes news sentiment and technical trends for a batch of candidate symbols in a single Gemini call.
+    Each candidate is a dict: {"symbol": str, "news_items": list, "technical_summary": str}
     
     Uses structured output JSON schemas to ensure reliable parsing.
     """
@@ -224,21 +224,21 @@ def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_ov
             f"Title: {item['title']}\nSnippet: {item['description']}"
             for item in c["news_items"]
         ])
-        news_blocks.append(f"Asset Symbol: {symbol}\nRaw news:\n{news_text}")
+        news_blocks.append(f"Stock Symbol: {symbol}\nRaw news:\n{news_text}")
         
     combined_news_prompt = f"""
-    You are a highly detailed and precise quantitative research assistant for a trading platform. 
-    Your task is to analyze, clean, filter out noise or spam, and synthesize a detailed, comprehensive multi-paragraph news digest for each cryptocurrency asset.
+    You are a highly detailed and precise quantitative research assistant for an equity stock trading platform. 
+    Your task is to analyze, clean, filter out noise, and synthesize a detailed, comprehensive news digest for each stock asset.
     
     CRITICAL INSTRUCTIONS:
     - Do NOT make the digest too short, brief, or generic. Other quantitative models rely on the richness of this digest to perform sentiment analysis.
-    - Provide a thorough coverage of major positive developments, technological updates, institutional inflows, regulatory changes, and macroeconomic factors.
+    - Provide a thorough coverage of major positive developments, technological updates, guidance raises, institutional inflows, regulatory changes, and macroeconomic factors.
     - Include specific facts, percentages, named entities, and dates where available in the raw articles.
     - Ensure both positive opportunities and potential downside risks/worries are clearly articulated in detail.
     
-    Here is the raw news by symbol:
+    Here is the raw news by stock:
     
-    {"\n\n===Next Asset Symbol===\n\n".join(news_blocks)}
+    {"\n\n===Next Stock Symbol===\n\n".join(news_blocks)}
     """
     
     digest_map = {}
@@ -268,27 +268,31 @@ def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_ov
         for c in valid_candidates:
             digest_map[c["symbol"]] = f"Summarization failed: {e}"
 
-    # Step 2: Batch Sentiment Scoring with a Skeptical Analyst persona
+    # Step 2: Batch Sentiment Scoring with a Skeptical Analyst persona (News + Tech verification)
     log_event("INFO", "AI_MODULE", f"Step 2: Performing Batch Sentiment evaluation using '{sentiment_model}'...")
     
     digest_blocks = []
     for symbol, digest in digest_map.items():
-        digest_blocks.append(f"Asset Symbol: {symbol}\nDigest:\n{digest}")
+        # Find candidate corresponding to this symbol
+        cand = next((c for c in valid_candidates if c["symbol"] == symbol), {})
+        tech_summary = cand.get("technical_summary", "No technical price action data provided.")
+        digest_blocks.append(f"Stock Symbol: {symbol}\nTechnical Price Action & Indicators:\n{tech_summary}\nSynthesized News Digest:\n{digest}")
         
     skeptical_prompt = f"""
     You are a highly skeptical quantitative financial analyst. 
-    Analyze the following synthesized cryptocurrency news digests and evaluate the near-term market sentiment for each asset.
+    Analyze the following technical trend summaries and news digests to evaluate the near-term market sentiment for each stock asset.
     
     IMPORTANT CRITERIA FOR YOUR ANALYSIS:
-    - Actively look for risks, regulatory headwinds, macro factors, and potential false breakouts.
+    - Actively look for risks, overvaluation, regulatory roadblocks, earnings misses, macro factors, and technical warnings.
     - Ignore speculative retail hype, promotional marketing releases, and sensationalist clickbait titles.
     - Demand solid, verified fundamentals.
-    - If the news for an asset is weak, vague, ambiguous, or lacks solid backing, bias your score toward 0 (Neutral).
-    - Only assign strong positive scores (>= 3) or strong negative scores (<= -3) if there is clear, verified fundamental evidence.
+    - Validate if the technical trend aligns with the news flow (e.g. if technicals indicate a breakout but news is extremely bearish or warning of distribution, be highly skeptical).
+    - If the news/technical alignment is weak, vague, ambiguous, or lacks solid backing, bias your score toward 0 (Neutral).
+    - Only assign strong positive scores (>= 3) or strong negative scores (<= -3) if there is clear, verified fundamental evidence and trend confirmation.
     
-    Here are the digests by symbol:
+    Here are the technical summaries and digests by symbol:
     
-    {"\n\n===Next Asset Symbol===\n\n".join(digest_blocks)}
+    {"\n\n===Next Stock Symbol===\n\n".join(digest_blocks)}
     """
     
     try:
@@ -363,28 +367,26 @@ def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_ov
             })
         return results
 
-def analyze_sentiment(symbol="BTC/USDT", news_items=None, sentiment_model_override=None):
+def analyze_sentiment(symbol="AAPL/USD", news_items=None, sentiment_model_override=None):
     """
     Main entry point for Gemini-based sentiment analysis.
-    Refactored to call the structured batch logic under the hood to ensure consistent optimization.
     """
     results = analyze_sentiment_batch([{"symbol": symbol, "news_items": news_items}], sentiment_model_override)
     if results:
         return results[0]
     return {"sentiment_score": 0, "reason": "Sentiment analysis failed.", "digest": "", "is_simulated": True}
 
-def run_simulated_sentiment(symbol="BTC/USDT", news_items=None):
+def run_simulated_sentiment(symbol="AAPL/USD", news_items=None):
     """
     Intelligent simulated fallback that scans keywords in the articles to 
     produce an appropriate score and single-sentence explanation.
-    Allows complete app preview and offline verification.
     """
     if not news_items:
         return {"sentiment_score": 0, "reason": "No news articles to simulate.", "digest": "No news articles to simulate."}
         
     score = 0
-    positive_words = ["breakout", "rally", "upgrade", "inflow", "institutional", "gain", "growth", "support", "bullish", "scale"]
-    negative_words = ["correction", "concern", "liquidations", "regulatory", "headwinds", "cautious", "drop", "bearish", "crash", "fall"]
+    positive_words = ["breakout", "rally", "upgrade", "inflow", "earnings beat", "guidance raise", "growth", "support", "bullish", "acquisition"]
+    negative_words = ["correction", "concern", "earnings miss", "regulatory", "headwinds", "cautious", "drop", "bearish", "downgrade", "fall"]
     
     pos_count = 0
     neg_count = 0
@@ -400,17 +402,16 @@ def run_simulated_sentiment(symbol="BTC/USDT", news_items=None):
                 
     if pos_count > neg_count:
         score = random.randint(3, 7)
-        reason = f"Simulated sentiment evaluates to positive bullish drift (+{score}) due to institutional chatter and breakout potential."
+        reason = f"Simulated sentiment evaluates to positive bullish drift (+{score}) due to technology sector demand and guidance estimates."
     elif neg_count > pos_count:
         score = random.randint(-7, -3)
-        reason = f"Simulated sentiment evaluates to negative bearish drift ({score}) following short-term correction risks and liquidation concerns."
+        reason = f"Simulated sentiment evaluates to negative bearish drift ({score}) following earnings guidance worries and valuation concerns."
     else:
         score = random.randint(-2, 2)
-        reason = f"Simulated sentiment evaluates to neutral/indecisive ({score}) as positive tech upgrades are offset by macroeconomic headwinds."
+        reason = f"Simulated sentiment evaluates to neutral ({score}) as positive structural trends are balanced by broader market headwinds."
         
     digest = "Simulated Digest:\n" + "\n".join([f"- {i['title']}" for i in news_items[:3]])
     
-    # Save simulation to SQLite audit log
     save_ai_run(symbol, digest, score, reason)
     
     return {
@@ -420,10 +421,9 @@ def run_simulated_sentiment(symbol="BTC/USDT", news_items=None):
     }
 
 if __name__ == "__main__":
-    # Test execution
     mock_news = [
-        {"title": "Bitcoin surges over $70k on institutional support", "description": "ETFs show record daily inflows as major financial groups increase spot allocation."},
-        {"title": "Concerns over macroeconomic headwinds grow", "description": "Markets consolidate as traders await global rate announcements."}
+        {"title": "Apple surges on AI integration announcements", "description": "New chip upgrades raise analyst consensus estimates and guidance for next fiscal year."},
+        {"title": "Semiconductor inventory headwinds worry stock market", "description": "Concerns over short term shipment numbers result in consolidation across major indices."}
     ]
-    res = analyze_sentiment("BTC/USDT", mock_news)
+    res = analyze_sentiment("AAPL/USD", mock_news)
     print(res)

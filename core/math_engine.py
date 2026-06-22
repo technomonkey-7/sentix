@@ -24,8 +24,6 @@ def calculate_indicators(df):
         # 3. MACD (12, 26, 9)
         macd_df = df.ta.macd(fast=12, slow=26, signal=9)
         if macd_df is not None and not macd_df.empty:
-            # Dynamically identify columns to tolerate different pandas-ta version schemas
-            # Use startswith for robust matching (old filter with 's'/'h' character checks was fragile)
             macd_col = [c for c in macd_df.columns if c.startswith('MACD_') and not c.startswith('MACDs_') and not c.startswith('MACDh_')]
             sig_col = [c for c in macd_df.columns if c.startswith('MACDs_')]
             hist_col = [c for c in macd_df.columns if c.startswith('MACDh_')]
@@ -42,28 +40,95 @@ def calculate_indicators(df):
         
     return df
 
+def calculate_support_resistance(df, window=5):
+    """
+    Identifies key support and resistance levels based on local price swing extremes.
+    Returns:
+        supports: list of float values representing support price levels (sorted ascending)
+        resistances: list of float values representing resistance price levels (sorted ascending)
+    """
+    supports = []
+    resistances = []
+    
+    if df is None or len(df) < 2 * window + 1:
+        return supports, resistances
+        
+    try:
+        # Loop over historical candles excluding recent margin window to avoid future leaks
+        for i in range(window, len(df) - window):
+            low_val = float(df.iloc[i]['low'])
+            high_val = float(df.iloc[i]['high'])
+            
+            # Local Minima (Support Level)
+            if low_val == df['low'].iloc[i-window : i+window+1].min():
+                supports.append(low_val)
+                
+            # Local Maxima (Resistance Level)
+            if high_val == df['high'].iloc[i-window : i+window+1].max():
+                resistances.append(high_val)
+                
+        # Deduplicate, sort, and return the latest key historical levels
+        supports = sorted(list(set(supports)))[-5:]
+        resistances = sorted(list(set(resistances)))[-5:]
+    except Exception as e:
+        log_event("ERROR", "MATH_ENGINE", f"Failed to calculate support/resistance levels: {e}")
+        
+    return supports, resistances
+
+def check_candlestick_patterns(df):
+    """
+    Checks the latest completed candle (index -2) for high-probability reversal structures.
+    Returns:
+        patterns: list of detected patterns (e.g., ["Bullish Engulfing"])
+    """
+    patterns = []
+    if df is None or len(df) < 3:
+        return patterns
+        
+    try:
+        c_prev = df.iloc[-3]
+        c_curr = df.iloc[-2]
+        
+        body_curr = abs(c_curr['close'] - c_curr['open'])
+        range_curr = c_curr['high'] - c_curr['low']
+        
+        # 1. Bullish Engulfing
+        prev_red = c_prev['close'] < c_prev['open']
+        curr_green = c_curr['close'] > c_curr['open']
+        if prev_red and curr_green:
+            # Engulfing: open must be <= previous close and close must be >= previous open
+            if c_curr['open'] <= c_prev['close'] and c_curr['close'] >= c_prev['open']:
+                patterns.append("Bullish Engulfing")
+                
+        # 2. Hammer
+        if range_curr > 0:
+            body_pct = body_curr / range_curr
+            lower_shadow = min(c_curr['open'], c_curr['close']) - c_curr['low']
+            upper_shadow = c_curr['high'] - max(c_curr['open'], c_curr['close'])
+            
+            # Hammer criteria: body occupies < 35% of range, lower shadow is >= 2x body, upper shadow is minimal
+            if body_pct < 0.35 and lower_shadow >= 2.0 * body_curr and upper_shadow < 0.1 * range_curr:
+                # Must occur in a pullback (close is below 20 EMA)
+                if 'ema' in c_curr and c_curr['close'] < c_curr['ema']:
+                    patterns.append("Hammer")
+                    
+    except Exception as e:
+        log_event("ERROR", "MATH_ENGINE", f"Error checking candlestick patterns: {e}")
+        
+    return patterns
+
 def check_triggers(df):
     """
     Checks for deterministic indicator crossover buy/sell triggers.
     Signals are calculated on the latest completed candle (index -2) and 
     the prior candle (index -3) to prevent active candle repainting.
-    
-    Returns:
-        trigger_type: "BUY", "SELL", or None
-        reason: Single string description of what triggered it (e.g., "MACD Crossover")
     """
     if df is None or len(df) < 5 or 'rsi' not in df.columns or 'macd' not in df.columns:
         return None, "Insufficient indicator data"
-
-    # We evaluate on fully completed candles
-    # index -1 = active forming candle
-    # index -2 = latest completed candle
-    # index -3 = previous completed candle
     
     c_prev = df.iloc[-3]
     c_curr = df.iloc[-2]
 
-    # Extract current and previous values safely
     try:
         close_p, close_c = float(c_prev['close']), float(c_curr['close'])
         ema_p, ema_c = float(c_prev['ema']), float(c_curr['ema'])
@@ -73,33 +138,29 @@ def check_triggers(df):
     except (ValueError, KeyError, TypeError) as e:
         return None, f"Indicator computation incomplete: {e}"
 
-    # Check Bullish (BUY) triggers
-    # 1. MACD Bullish Cross: MACD line crosses above Signal line
-    # Added threshold: crossover difference must be at least 0.005% of price to filter out flat-market noise
+    # MACD Bullish Cross: MACD line crosses above Signal line
     macd_diff_pct = ((macd_c - sig_c) / close_c) * 100 if close_c > 0 else 0.0
     macd_bullish_cross = (macd_p <= sig_p) and (macd_c > sig_c) and (macd_diff_pct >= 0.005)
     
-    # 2. RSI Oversold recovery: RSI crosses back above 30, or enters oversold zone
+    # RSI Oversold recovery: RSI crosses back above 30, or enters oversold zone
     rsi_oversold_cross = (rsi_p >= 30) and (rsi_c < 30)
     rsi_oversold_recovery = (rsi_p < 30) and (rsi_c >= 30)
     
-    # 3. EMA Bullish Breakout: Price crosses above EMA 20 by at least 0.05% to confirm breakout
+    # EMA Bullish Breakout: Price crosses above EMA 20 by at least 0.05%
     ema_bullish_cross = (close_p <= ema_p) and (close_c >= ema_c * 1.0005)
 
-    # Check Bearish (SELL) triggers
-    # 1. MACD Bearish Cross: MACD line crosses below Signal line
-    # Added threshold: crossover difference must be at least 0.005% of price
+    # MACD Bearish Cross: MACD line crosses below Signal line
     macd_bearish_diff_pct = ((sig_c - macd_c) / close_c) * 100 if close_c > 0 else 0.0
     macd_bearish_cross = (macd_p >= sig_p) and (macd_c < sig_c) and (macd_bearish_diff_pct >= 0.005)
     
-    # 2. RSI Overbought exit: RSI crosses above 70, or falls back below 70
+    # RSI Overbought exit: RSI crosses above 70, or falls back below 70
     rsi_overbought_cross = (rsi_p <= 70) and (rsi_c > 70)
     rsi_overbought_reentry = (rsi_p > 70) and (rsi_c <= 70)
     
-    # 3. EMA Bearish Breakdown: Price falls below EMA 20 by at least 0.05% to confirm breakdown
+    # EMA Bearish Breakdown: Price falls below EMA 20 by at least 0.05%
     ema_bearish_cross = (close_p >= ema_p) and (close_c <= ema_c * 0.9995)
 
-    # Prioritize triggers and generate descriptive text
+    # Prioritize triggers
     if macd_bullish_cross:
         return "BUY", "MACD Bullish Cross (MACD crossed above Signal)"
     elif rsi_oversold_cross:
@@ -123,16 +184,6 @@ def check_triggers(df):
 def confirm_with_higher_tf(df_1h, df_4h, trigger_side):
     """
     Performs double-check confirmation using 4h timeframe trend and 1h volume analysis.
-    
-    For BUY:
-      - 4h trend must be bullish (4h close > 4h EMA 20 OR 4h MACD > 4h MACD Signal).
-      - 1h volume of the trigger candle must be above the 20-period moving average of 1h volume (volume expansion).
-    For SELL:
-      - 4h trend must be bearish (4h close < 4h EMA 20 OR 4h MACD < 4h MACD Signal).
-      
-    Returns:
-      confirmed: bool
-      reason: str description of confirmation/rejection details
     """
     if df_4h is None or len(df_4h) < 20 or 'ema' not in df_4h.columns:
         return False, "Insufficient 4h candle data to verify trend"
@@ -143,7 +194,6 @@ def confirm_with_higher_tf(df_1h, df_4h, trigger_side):
         close_4h = float(c_4h['close'])
         ema_4h = float(c_4h['ema'])
         
-        # Optional MACD checks
         macd_4h = float(c_4h['macd']) if 'macd' in c_4h and c_4h['macd'] is not None else None
         sig_4h = float(c_4h['macd_signal']) if 'macd_signal' in c_4h and c_4h['macd_signal'] is not None else None
         
@@ -182,4 +232,3 @@ def confirm_with_higher_tf(df_1h, df_4h, trigger_side):
         return True, "Confirmed: 4h trend is bearish"
         
     return False, f"Unknown trigger side: {trigger_side}"
-

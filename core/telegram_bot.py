@@ -183,21 +183,21 @@ def process_command(text: str):
     
     if cmd == "/start" or cmd == "/help":
         msg = (
-            "🤖 *Sentix Algoritmik Trading Bot Yönetim Paneli*\n\n"
+            "🤖 *Sentix Algoritmik Hisse Senedi Trading Paneli*\n\n"
             "Kullanabileceğiniz komutlar:\n"
-            "📈 `/portfolio` - Portföy durumu ve cüzdan Net Değeri (NAV)\n"
-            "📦 `/positions` - Açık aktif spot pozisyonlar ve anlık PnL\n"
+            "📈 `/portfolio` - Portföy durumu ve Net Değer (NAV)\n"
+            "📦 `/positions` - Açık aktif hisse pozisyonları ve anlık PnL\n"
             "📜 `/trades` - Son 5 işlem geçmişi\n"
-            "📂 `/assets` - İzlenen aktif kripto birimlerini listeler\n"
+            "📂 `/assets` - İzlenen aktif hisseleri/endeksleri listeler\n"
             "🔒 `/vpn` - VPN bağlantı durumu ve IP adresi\n"
             "🔒 `/vpn_logs` - Sunucudaki VPN bağlantı loglarını listeler\n"
-            "🧠 `/ai_status` - Sadece aktif duygu skoru olan pariteleri listeler\n"
+            "🧠 `/ai_status` - Sadece aktif duygu skoru olan hisseleri listeler\n"
             "📝 `/logs` - Son 5 platform log kaydı\n"
             "🚀 `/trigger` - Manuel analiz döngüsünü tetikler\n"
-            "⏸️ `/pause` - Otomatik alım-satım döngüsünü duraklatır\n"
+            "⏸️ `/pause` - Otomatik alım-satım döngüsünü duraklatır (durdurur)\n"
             "▶️ `/resume` - Otomatik alım-satım döngüsünü başlatır\n"
             "⚙️ `/risk` `yüzde` - NAV işlem büyüklüğü yüzdesini ayarlar (örn: `/risk 2.5`)\n"
-            "🛡️ `/sltp` `sl` `tp` - Stop-Loss ve Take-Profit oranlarını günceller (örn: `/sltp 3.0 6.0`)"
+            "🛡️ `/sltp` `sl` `tp` - Stop-Loss ve Take-Profit oranlarını günceller (örn: `/sltp 2.0 5.0`)"
         )
         send_telegram_message(msg)
         
@@ -218,18 +218,18 @@ def process_command(text: str):
             "*Varlık Dağılımı:*\n"
         )
         
-        has_crypto = False
+        has_assets = False
         for asset, data in portfolio.items():
             if asset == "USD":
                 continue
             bal = data.get("balance", 0.0)
             avg_price = data.get("avg_entry_price", 0.0)
             if bal > 0:
-                has_crypto = True
+                has_assets = True
                 msg += f"• *{asset}:* `{bal:.4f}` (Ort. Maliyet: `${avg_price:,.2f}`)\n"
                 
-        if not has_crypto:
-            msg += "_Kripto varlık bulunmuyor (Tümü USD'de)._"
+        if not has_assets:
+            msg += "_Hisse senedi varlığı bulunmuyor (Tümü USD'de)._"
             
         send_telegram_message(msg)
         
@@ -331,10 +331,10 @@ def process_command(text: str):
         active_assets = [a.strip() for a in assets_str.split(",") if a.strip()]
         
         if not active_assets:
-            send_telegram_message("📂 *İzlenen aktif kripto birimi bulunmuyor.*")
+            send_telegram_message("📂 *İzlenen aktif hisse senedi bulunmuyor.*")
             return
             
-        msg = "📂 *İzlenen Kripto Birimleri:*\n\n"
+        msg = "📂 *İzlenen Hisseler / Endeksler:*\n\n"
         for idx, asset in enumerate(active_assets, 1):
             msg += f"{idx}. `{asset}`\n"
             
@@ -433,14 +433,19 @@ def process_command(text: str):
         threading.Thread(target=run_trigger_async, daemon=True).start()
         
     elif cmd == "/pause":
-        save_config("bot_paused", "true")
-        log_event("WARNING", "TELEGRAM", "Automatic trading paused by Telegram command.")
-        send_telegram_message("⏸️ *Otomatik alım-satım döngüsü duraklatıldı!* (Zarar Durdur / Kâr Al koruyucuları aktif kalmaya devam edecektir.)")
+        save_config("bot_running", "false")
+        log_event("WARNING", "TELEGRAM", "Automatic trading paused (stopped) by Telegram command.")
+        send_telegram_message("⏸️ *Otomatik alım-satım döngüsü DURDURULDU!* (Bot tamamen uykudadır.)")
         
     elif cmd == "/resume":
-        save_config("bot_paused", "false")
-        log_event("SUCCESS", "TELEGRAM", "Automatic trading resumed by Telegram command.")
-        send_telegram_message("▶️ *Otomatik alım-satım döngüsü yeniden başlatıldı!*")
+        from worker import validate_api_key_for_start
+        if validate_api_key_for_start():
+            save_config("bot_running", "true")
+            log_event("SUCCESS", "TELEGRAM", "Automatic trading started by Telegram command.")
+            send_telegram_message("▶️ *Otomatik alım-satım döngüsü BAŞLATILDI!*")
+        else:
+            log_event("ERROR", "TELEGRAM", "Attempted to start bot without valid API Key.")
+            send_telegram_message("❌ *Hata:* Google Gemini API anahtarı bulunamadı! Bot başlatılamıyor.")
         
     elif cmd == "/risk":
         if len(cmd_parts) < 2:

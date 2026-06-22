@@ -1,4 +1,4 @@
-import ccxt
+import yfinance as yf
 import os
 import pandas as pd
 import requests
@@ -9,51 +9,67 @@ import random
 import time
 from core.db import log_event, get_config
 
-def fetch_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=100):
+def fetch_ohlcv(symbol="AAPL/USD", timeframe="1h", limit=100):
     """
-    Fetches OHLCV candlestick data for a symbol and timeframe using ccxt.
-    In LIVE_MODE (configurable), API failures raise exceptions instead of falling back to simulated data.
-    In simulation mode, provides automatic fallback to synthetic data if network fails.
+    Fetches OHLCV candlestick data for a stock symbol and timeframe using yfinance.
+    In LIVE_MODE, failures raise exceptions. In simulation mode, provides fallback to synthetic data.
     """
     live_mode = (get_config("live_mode") or os.getenv("LIVE_MODE", "false")).lower() == "true"
+    ticker_symbol = symbol.split('/')[0] if '/' in symbol else symbol
     
     max_retries = 3
     retry_delay = 2.0
     
     for attempt in range(max_retries):
         try:
-            log_event("INFO", "DATA_FETCHER", f"Fetching {limit} candles for {symbol} ({timeframe}) from CCXT (Attempt {attempt+1}/{max_retries})...")
-            # Load configured exchange dynamically to bypass geographic/provider restrictions
-            exchange_name = get_config("exchange_name") or os.getenv("EXCHANGE_NAME", "binance")
-            exchange_class = getattr(ccxt, exchange_name.lower(), ccxt.binance)
+            log_event("INFO", "DATA_FETCHER", f"Fetching candles for {ticker_symbol} ({timeframe}) from YFinance (Attempt {attempt+1}/{max_retries})...")
             
-            exchange_config = {
-                'enableRateLimit': True,
-                'options': {'defaultType': 'spot'}
-            }
+            # Use appropriate period for fetching (1h allows max 730 days)
+            # Fetch 30 days for 1h, 90 days for 4h resample
+            period = "90d" if timeframe == "4h" else "30d"
             
-            # Add proxy configuration if defined in env
-            http_proxy = os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
-            https_proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
-            if http_proxy or https_proxy:
-                exchange_config['proxies'] = {}
-                if http_proxy:
-                    exchange_config['proxies']['http'] = http_proxy
-                if https_proxy:
-                    exchange_config['proxies']['https'] = https_proxy
-                    
-            exchange = exchange_class(exchange_config)
+            ticker = yf.Ticker(ticker_symbol)
+            # Fetch hourly data
+            df_raw = ticker.history(period=period, interval="1h")
             
-            # Call fetch_ohlcv
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            if df_raw.empty:
+                raise ValueError(f"Empty data returned from Yahoo Finance for {ticker_symbol}.")
             
-            if not ohlcv or len(ohlcv) == 0:
-                raise ValueError("Empty candle data returned from exchange.")
-                
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            # Convert timestamp (ms) to ISO string or formatted string
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.strftime('%Y-%m-%d %H:%M:%S')
+            # Reset index and rename columns
+            df_raw = df_raw.reset_index()
+            df_raw.rename(columns={
+                'Datetime': 'timestamp',
+                'Date': 'timestamp',
+                'Open': 'open',
+                'High': 'high',
+                'Low': 'low',
+                'Close': 'close',
+                'Volume': 'volume'
+            }, inplace=True)
+            
+            # Select required columns and convert index
+            df = df_raw[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # If 4h timeframe is requested, resample 1h data to 4h
+            if timeframe == "4h":
+                df.set_index('timestamp', inplace=True)
+                df_resampled = df.resample('4H').agg({
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum'
+                }).dropna().reset_index()
+                df = df_resampled
+            
+            # Format timestamp back to string
+            df['timestamp'] = df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Take the last N candles according to limit
+            df = df.tail(limit).reset_index(drop=True)
             df['_is_simulated'] = False
+            
             log_event("SUCCESS", "DATA_FETCHER", f"Successfully fetched {len(df)} candles for {symbol} on attempt {attempt+1}.")
             return df
 
@@ -63,51 +79,34 @@ def fetch_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=100):
                 time.sleep(retry_delay)
             else:
                 if live_mode:
-                    log_event("ERROR", "DATA_FETCHER", f"CCXT fetch FAILED for {symbol} in LIVE MODE after {max_retries} attempts: {e}. Refusing to fall back to simulated data.")
+                    log_event("ERROR", "DATA_FETCHER", f"YFinance fetch FAILED for {symbol} in LIVE MODE after {max_retries} attempts: {e}.")
                     raise RuntimeError(f"LIVE MODE: Cannot fetch real market data for {symbol}. API error: {e}")
                 
-                log_event("WARNING", "DATA_FETCHER", f"CCXT fetch failed for {symbol} after {max_retries} attempts. Generating simulated fallback data (NOT REAL PRICES).")
+                log_event("WARNING", "DATA_FETCHER", f"YFinance fetch failed for {symbol} after {max_retries} attempts. Generating simulated fallback data.")
                 return generate_simulated_ohlcv(symbol, timeframe, limit)
 
-def generate_simulated_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=100):
+def generate_simulated_ohlcv(symbol="AAPL/USD", timeframe="1h", limit=100):
     """
     Generates synthetic but highly realistic OHLCV data using a random walk with drift.
     Ensures that the trading engine can always run and display charts, even offline.
     """
-    # Base prices for assets to keep simulations realistic
     base_prices = {
-        "BTC/USDT": 65000.0,
-        "ETH/USDT": 3400.0,
-        "SOL/USDT": 150.0,
-        "BNB/USDT": 580.0,
-        "XRP/USDT": 0.50,
-        "ADA/USDT": 0.45,
-        "DOGE/USDT": 0.15,
-        "AVAX/USDT": 35.0,
-        "LINK/USDT": 15.0,
-        "DOT/USDT": 6.50,
-        "NEAR/USDT": 6.0,
-        "MATIC/USDT": 0.70,
-        "SUI/USDT": 1.50,
-        "APT/USDT": 9.00,
-        "OP/USDT": 2.50,
-        "ARB/USDT": 1.00,
-        "LTC/USDT": 85.0,
-        "TRX/USDT": 0.12,
-        "XLM/USDT": 0.14,
-        "UNI/USDT": 7.50,
-        "ATOM/USDT": 8.0,
-        "INJ/USDT": 25.0,
-        "TIA/USDT": 5.0,
-        "GRT/USDT": 0.25,
-        "FET/USDT": 1.80,
-        "RNDR/USDT": 8.0,
-        "SHIB/USDT": 0.00002,
-        "ETC/USDT": 28.0,
-        "FIL/USDT": 5.50,
-        "ICP/USDT": 12.0
+        "AAPL/USD": 180.0,
+        "MSFT/USD": 420.0,
+        "NVDA/USD": 120.0,
+        "AMD/USD": 170.0,
+        "TSLA/USD": 180.0,
+        "AMZN/USD": 180.0,
+        "GOOGL/USD": 170.0,
+        "META/USD": 480.0,
+        "ARM/USD": 120.0,
+        "TSM/USD": 140.0,
+        "AVGO/USD": 1400.0,
+        "ASML/USD": 950.0,
+        "QQQ/USD": 440.0,
+        "SPY/USD": 510.0
     }
-    base_price = base_prices.get(symbol, 100.0)
+    base_price = base_prices.get(symbol, 150.0)
     
     # Time delta based on timeframe
     now = datetime.now(timezone.utc)
@@ -122,15 +121,15 @@ def generate_simulated_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=100):
     current_price = base_price * (1 + random.uniform(-0.05, 0.05)) # Random start price
     
     for _ in range(limit):
-        pct_change = random.normalvariate(0.0005, 0.008) # Small positive drift, volatility
+        pct_change = random.normalvariate(0.0002, 0.005) # Small positive drift, stock-like volatility
         open_price = current_price
         close_price = current_price * (1 + pct_change)
         
         # Volatility noise for high and low
-        high_price = max(open_price, close_price) * (1 + abs(random.normalvariate(0, 0.004)))
-        low_price = min(open_price, close_price) * (1 - abs(random.normalvariate(0, 0.004)))
+        high_price = max(open_price, close_price) * (1 + abs(random.normalvariate(0, 0.003)))
+        low_price = min(open_price, close_price) * (1 - abs(random.normalvariate(0, 0.003)))
         
-        volume = random.uniform(10, 500) if symbol != "BTC/USDT" else random.uniform(100, 2000)
+        volume = random.uniform(1000, 50000)
         
         opens.append(round(open_price, 2))
         highs.append(round(high_price, 2))
@@ -151,53 +150,38 @@ def generate_simulated_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=100):
     df['_is_simulated'] = True
     return df
 
-def fetch_asset_news(symbol="BTC/USDT", limit=10):
+def fetch_asset_news(symbol="AAPL/USD", limit=10):
     """
     Scrapes the latest news articles for a symbol using the free Google News RSS Feed.
     Filters out any articles older than the configured news_freshness_hours limit.
     Extracts article title, snippet, and link, returning them as a clean list of dicts.
     """
-    # Load news freshness limit in hours from configuration, default to 24
     try:
         hours = int(get_config("news_freshness_hours", "24"))
     except Exception:
         hours = 24
 
-    asset_name = symbol.split('/')[0]
-    # Standard names for better search relevance
+    asset_name = symbol.split('/')[0] if '/' in symbol else symbol
+    
+    # Stock-focused search queries
     search_keywords = {
-        "BTC": "Bitcoin",
-        "ETH": "Ethereum",
-        "SOL": "Solana",
-        "BNB": "Binance Coin BNB",
-        "XRP": "Ripple XRP",
-        "ADA": "Cardano ADA",
-        "DOGE": "Dogecoin DOGE",
-        "AVAX": "Avalanche AVAX",
-        "LINK": "Chainlink LINK",
-        "DOT": "Polkadot DOT",
-        "NEAR": "Near Protocol NEAR",
-        "MATIC": "Polygon MATIC",
-        "SUI": "Sui Network SUI",
-        "APT": "Aptos APT",
-        "OP": "Optimism OP",
-        "ARB": "Arbitrum ARB",
-        "LTC": "Litecoin LTC",
-        "TRX": "Tron TRX",
-        "XLM": "Stellar Lumens XLM",
-        "UNI": "Uniswap UNI",
-        "ATOM": "Cosmos ATOM",
-        "INJ": "Injective INJ",
-        "TIA": "Celestia TIA",
-        "GRT": "The Graph GRT",
-        "FET": "Fetch.ai FET artificial superintelligence",
-        "RNDR": "Render Token RNDR",
-        "SHIB": "Shiba Inu SHIB",
-        "ETC": "Ethereum Classic ETC",
-        "FIL": "Filecoin FIL",
-        "ICP": "Internet Computer ICP"
+        "AAPL": "Apple Inc AAPL",
+        "MSFT": "Microsoft MSFT",
+        "NVDA": "NVIDIA NVDA AI",
+        "AMD": "Advanced Micro Devices AMD",
+        "TSLA": "Tesla TSLA EV",
+        "AMZN": "Amazon AMZN",
+        "GOOGL": "Alphabet Google GOOGL",
+        "META": "Meta Platforms META Mark Zuckerberg",
+        "ARM": "ARM Holdings ARM chip design",
+        "TSM": "TSMC Taiwan Semiconductor TSM",
+        "AVGO": "Broadcom AVGO chip semiconductor",
+        "ASML": "ASML photolithography chip semiconductor",
+        "QQQ": "Nasdaq 100 QQQ ETF",
+        "SPY": "S&P 500 SPY ETF"
     }
-    query = search_keywords.get(asset_name, asset_name) + f" crypto cryptocurrency market when:{hours}h"
+    
+    query = search_keywords.get(asset_name, asset_name) + f" stock market finance when:{hours}h"
     encoded_query = urllib.parse.quote(query)
     
     url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
@@ -206,7 +190,7 @@ def fetch_asset_news(symbol="BTC/USDT", limit=10):
     retry_delay = 2.0
     
     for attempt in range(max_retries):
-        log_event("INFO", "DATA_FETCHER", f"Scraping live RSS news (last {hours}h) for {symbol} using Google News feed (Attempt {attempt+1}/{max_retries})...")
+        log_event("INFO", "DATA_FETCHER", f"Scraping live RSS stock news (last {hours}h) for {symbol} (Attempt {attempt+1}/{max_retries})...")
         try:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -218,7 +202,6 @@ def fetch_asset_news(symbol="BTC/USDT", limit=10):
                 
             root = ET.fromstring(response.content)
             import email.utils
-            from datetime import datetime, timezone
             
             all_items = []
             for item in root.findall('.//item'):
@@ -227,11 +210,10 @@ def fetch_asset_news(symbol="BTC/USDT", limit=10):
                 pub_date = item.find('pubDate').text if item.find('pubDate') is not None else ""
                 description = item.find('description').text if item.find('description') is not None else ""
                 
-                # Clean up the RSS-injected source information from the title if present
+                # Clean up source from title
                 if " - " in title:
                     title = title.rsplit(" - ", 1)[0]
                     
-                # Parse publication date for sorting
                 parsed_dt = None
                 if pub_date:
                     try:
@@ -239,7 +221,6 @@ def fetch_asset_news(symbol="BTC/USDT", limit=10):
                     except Exception:
                         pass
                 
-                # Filter by maximum news age
                 if parsed_dt:
                     if parsed_dt.tzinfo is None:
                         parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
@@ -248,7 +229,6 @@ def fetch_asset_news(symbol="BTC/USDT", limit=10):
                     if age > timedelta(hours=hours):
                         continue
                 else:
-                    # If we couldn't parse the date, skip it to ensure freshness guarantee
                     continue
                         
                 all_items.append({
@@ -259,10 +239,8 @@ def fetch_asset_news(symbol="BTC/USDT", limit=10):
                     "description": description
                 })
                 
-            # Sort news_items by parsed_dt in descending order (newest first)
             all_items.sort(key=lambda x: x["parsed_dt"], reverse=True)
             
-            # Format the final limited list
             news_items = []
             for item in all_items[:limit]:
                 news_items.append({
@@ -273,26 +251,26 @@ def fetch_asset_news(symbol="BTC/USDT", limit=10):
                     "_is_simulated": False
                 })
                 
-            log_event("SUCCESS", "DATA_FETCHER", f"Scraped {len(news_items)} chronologically sorted news articles for {symbol} on attempt {attempt+1}.")
+            log_event("SUCCESS", "DATA_FETCHER", f"Scraped {len(news_items)} sorted news articles for {symbol}.")
             return news_items
             
         except Exception as e:
-            log_event("WARNING", "DATA_FETCHER", f"Attempt {attempt+1} failed to scrape news for {symbol}: {e}")
+            log_event("WARNING", "DATA_FETCHER", f"Attempt {attempt+1} failed to scrape news: {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             else:
-                log_event("ERROR", "DATA_FETCHER", f"Failed to scrape RSS news for {symbol} after {max_retries} attempts: {e}. News fetching failed.")
-                return None
+                log_event("ERROR", "DATA_FETCHER", f"Failed to scrape RSS news after {max_retries} attempts: {e}.")
+                return generate_mock_news(symbol, limit)
 
-def generate_mock_news(symbol="BTC/USDT", limit=5):
-    """Generates synthetic news items in case of RSS feed request errors or network issues."""
-    asset_name = symbol.split('/')[0]
+def generate_mock_news(symbol="AAPL/USD", limit=5):
+    """Generates synthetic news items in case of RSS feed errors or network issues."""
+    asset_name = symbol.split('/')[0] if '/' in symbol else symbol
     templates = [
-        {"title": f"Why {asset_name} is Poised for a Major Breakout in the Coming Weeks", "description": "Analyst indicators suggest a historical support level has been verified, setting up potential positive momentum."},
-        {"title": f"Institutional Inflows into {asset_name} Reach Multi-Month Highs", "description": "Regulatory filings show institutional funds increasing their spot exposure, citing strong utility and long term value."},
-        {"title": f"Is {asset_name} Overvalued? Short-Term Correction Concerns Grow", "description": "Some derivative indicators indicate localized overleveraged long positions, which could trigger a brief liquidations flush."},
-        {"title": f"New Technical Upgrade Announced for {asset_name} Ecosystem", "description": "Developers roll out a highly anticipated scalability update that significantly decreases transaction latency."},
-        {"title": f"Macroeconomic Headwinds Inject Volatility into Crypto Markets", "description": "Global economic indicators and rate discussions keep retail traders cautious, resulting in consolidation across majors."}
+        {"title": f"Why {asset_name} is Poised for a Major Breakout in the Stock Market", "description": f"Analysts suggest that the strong institutional demand and positive earnings estimates are backing a technical breakout for {asset_name}."},
+        {"title": f"New Technological Breakthrough Announced by {asset_name}", "description": f"The development team has unveiled an advanced product line that is expected to expand the margins and market share of {asset_name}."},
+        {"title": f"Is {asset_name} Stock Overvalued? Potential Short-Term Distribution Underway", "description": f"Several market indicators suggest that {asset_name} might be slightly overextended on daily timeframes, warning swing traders of profit taking."},
+        {"title": f"Semiconductor Sector Analysis: Demand Remains Resilient", "description": f"Industry experts report that structural trends in computing power and AI models keep semiconductor leaders well positioned for the future."},
+        {"title": f"Macroeconomic Outlook: Stock Markets Adjust to Global Interest Rate Decisions", "description": "Trading volumes consolidate as market participants wait for official macroeconomic indicators and rate updates."}
     ]
     
     random.shuffle(templates)
@@ -303,7 +281,7 @@ def generate_mock_news(symbol="BTC/USDT", limit=5):
         pub_time = now - timedelta(hours=i * 2)
         mock_items.append({
             "title": templates[i]["title"],
-            "link": "https://example.com/crypto-news",
+            "link": "https://example.com/stock-news",
             "pub_date": pub_time.strftime("%a, %d %b %Y %H:%M:%S GMT"),
             "description": templates[i]["description"],
             "_is_simulated": True
@@ -314,9 +292,12 @@ def generate_mock_news(symbol="BTC/USDT", limit=5):
 def check_vpn_connection():
     """
     Checks if the VPN / Network connection is active by making requests using the configured proxy.
-    Checks if Binance API is reachable. Returns True if connected, False otherwise.
+    Returns True if connected, False otherwise.
     """
-    # Resolve proxy configuration if defined in env
+    vpn_check_enabled = (get_config("vpn_check_enabled", "false")).lower() == "true"
+    if not vpn_check_enabled:
+        return True
+
     http_proxy = os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
     https_proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
     proxies = {}
@@ -325,7 +306,6 @@ def check_vpn_connection():
     if https_proxy:
         proxies['https'] = https_proxy
 
-    # Try reaching public IP API first to show current IP in logs
     ip_str = "Unknown"
     try:
         resp_ip = requests.get("https://httpbin.org/ip", proxies=proxies, timeout=5)
@@ -334,22 +314,20 @@ def check_vpn_connection():
     except Exception:
         pass
 
-    # Now test actual Binance connectivity
     try:
-        resp = requests.get("https://api.binance.com/api/v3/ping", proxies=proxies, timeout=5)
+        resp = requests.get("https://finance.yahoo.com", proxies=proxies, timeout=5)
         if resp.status_code == 200:
             log_event("SUCCESS", "VPN_CHECK", f"VPN / Network Connection is ACTIVE. Public IP: {ip_str}")
             return True
         else:
-            log_event("WARNING", "VPN_CHECK", f"Binance ping returned non-200 status: {resp.status_code}. Public IP: {ip_str}")
+            log_event("WARNING", "VPN_CHECK", f"Yahoo Finance ping returned non-200 status: {resp.status_code}. Public IP: {ip_str}")
             return False
     except Exception as e:
-        log_event("ERROR", "VPN_CHECK", f"VPN / Connection check FAILED: Binance is unreachable (IP: {ip_str}). Error: {e}")
+        log_event("ERROR", "VPN_CHECK", f"VPN / Connection check FAILED: Yahoo Finance is unreachable (IP: {ip_str}). Error: {e}")
         return False
 
 if __name__ == "__main__":
-    # Mini test block
-    df = fetch_ohlcv("BTC/USDT", "1h", limit=5)
+    df = fetch_ohlcv("AAPL/USD", "1h", limit=5)
     print(df)
-    news = fetch_asset_news("BTC/USDT", limit=3)
+    news = fetch_asset_news("AAPL/USD", limit=3)
     print(news)

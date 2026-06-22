@@ -1,7 +1,7 @@
 import unittest
 import pandas as pd
 import numpy as np
-from core.math_engine import calculate_indicators, check_triggers
+from core.math_engine import calculate_indicators, check_triggers, calculate_support_resistance, check_candlestick_patterns
 
 class TestMathEngine(unittest.TestCase):
 
@@ -138,6 +138,52 @@ class TestMathEngine(unittest.TestCase):
         side, reason = check_triggers(df_mock)
         self.assertEqual(side, "SELL")
         self.assertIn("EMA Crossover (Price fell below 20 EMA)", reason)
+
+    def test_calculate_support_resistance(self):
+        """Verifies that support and resistance levels are correctly identified."""
+        # Create a DataFrame with specific peaks and valleys
+        # We need length >= 2 * window + 1. Let's use window=2.
+        # Length >= 5. Let's make length = 11.
+        # Peak at index 3 (high=150, surrounding high=100) -> Resistance
+        # Valley at index 7 (low=50, surrounding low=100) -> Support
+        df_sr = pd.DataFrame({
+            'high': [100.0, 100.0, 100.0, 150.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+            'low':  [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 50.0, 100.0, 100.0, 100.0],
+            'open':  [100.0] * 11,
+            'close': [100.0] * 11
+        })
+        supports, resistances = calculate_support_resistance(df_sr, window=2)
+        self.assertIn(50.0, supports)
+        self.assertIn(150.0, resistances)
+
+    def test_check_candlestick_patterns_bullish_engulfing(self):
+        """Verifies Bullish Engulfing pattern detection."""
+        # Length must be >= 3
+        # index -3 (c_prev): open=100.0, close=95.0 (red)
+        # index -2 (c_curr): open=94.0, close=101.0 (green, engulfs prev body)
+        # index -1: padding
+        df_pat = pd.DataFrame({
+            'open':  [100.0, 94.0, 100.0],
+            'close': [95.0, 101.0, 100.0],
+            'high':  [101.0, 102.0, 100.0],
+            'low':   [94.0, 93.0, 100.0]
+        })
+        patterns = check_candlestick_patterns(df_pat)
+        self.assertIn("Bullish Engulfing", patterns)
+
+    def test_check_candlestick_patterns_hammer(self):
+        """Verifies Hammer pattern detection in a pullback."""
+        # Length must be >= 3
+        # index -2 (c_curr): open=91.0, close=92.0, low=88.0, high=92.1, ema=95.0
+        df_pat = pd.DataFrame({
+            'open':  [100.0, 91.0, 100.0],
+            'close': [100.0, 92.0, 100.0],
+            'high':  [100.0, 92.1, 100.0],
+            'low':   [100.0, 88.0, 100.0],
+            'ema':   [100.0, 95.0, 100.0]
+        })
+        patterns = check_candlestick_patterns(df_pat)
+        self.assertIn("Hammer", patterns)
 
 if __name__ == '__main__':
     unittest.main()

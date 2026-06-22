@@ -35,8 +35,8 @@ T = {
     "TR": {
         "title": "Sentix | Premium SaaS Kontrol Paneli",
         "subtitle": "Premium Kaldıraçsız Yapay Zeka Algoritmik Trading ve Gerçek Zamanlı Pozisyon Koruyucu Kontrol Paneli",
-        "select_pairs": "Aktif İşlem Çiftlerini Seçin",
-        "select_pairs_help": "Botun arka planda tarayacağı ve otomatik sinyal arayacağı Binance spot işlem çiftleri.",
+        "select_pairs": "Aktif Hisseleri/Endeksleri Seçin",
+        "select_pairs_help": "Botun arka planda tarayacağı ve otomatik sinyal arayacağı hisseler ve endeksler.",
         "sum_model": "Özetleme Modeli (Aşırı Token Cimrisi - Adım 1)",
         "sum_model_help": "Google News makalelerini hızlıca okuyup temiz bir piyasa özeti çıkaran Flash modeli.",
         "sent_model": "Duygu Analiz Modeli (Gelişmiş - Adım 2)",
@@ -47,31 +47,31 @@ T = {
         "sl_pct_help": "Fiyat giriş seviyesinden bu yüzde kadar düştüğünde işlem anında otomatik olarak kapatılarak zarar sınırlandırılır.",
         "tp_pct": "Take-Profit (Kâr Al) Oranı %",
         "tp_pct_help": "Fiyat giriş seviyesinden bu yüzde kadar yükseldiğinde işlem anında kapatılarak kâr realize edilir.",
-        "exchange_name": "Aktif Borsa (CCXT)",
-        "exchange_name_help": "Piyasa verilerinin çekileceği borsa (örn: binance, bybit, kraken, okx, gateio, coinbase).",
+        "exchange_name": "Aktif Veri Sağlayıcı (YFinance)",
+        "exchange_name_help": "Piyasa verilerinin çekileceği Yahoo Finance sağlayıcısı.",
         "min_sentiment": "Min Yapay Zeka Duygu Eşiği",
         "min_sentiment_help": "Teknik sinyal oluştuktan sonra, işlemin onaylanması için gereken minimum yapay zeka duygu skoru (örn: 3).",
         "news_freshness_hours": "Haber Tazelik Limiti (Saat)",
-        "news_freshness_hours_help": "Gemini analizine dahil edilecek haberlerin maksimum yaşı. Örneğin, 24 saatlik haberler 1H/4H grafikler için en ideali.",
+        "news_freshness_hours_help": "Gemini analizine dahil edilecek haberlerin maksimum yaşı. Örneğin, 24 saatlik haberler grafikler için en ideali.",
         "quick_actions": "⚙️ Hızlı Eylemler",
         "sync_tick": "🚀 Sync Tick",
         "sync_tick_help": "Veri tabanını anlık günceller, indikatörleri hesaplar ve arka plan tarama döngüsünü tetikler.",
         "reset_port": "🔄 Portföyü Sıfırla",
         "reset_port_help": "Sanal bakiyeyi $10,000 USD yapar, tüm açık işlemleri, mumları ve log geçmişini temizler.",
-        "warning_select_pair": "⚠️ Lütfen sol panelden en az bir aktif işlem çifti seçin.",
+        "warning_select_pair": "⚠️ Lütfen sol panelden en az bir aktif varlık seçin.",
         "nav_metrics": "Portföy Durumu (NAV Hesaplama)",
         "free_usd": "USD Serbest Bakiye",
         "free_usd_help": "Cüzdanınızdaki boşta duran, kullanılabilir nakit dolar miktarı.",
         "portfolio_nav": "Portföy NAV Değeri",
-        "portfolio_nav_help": "Toplam portföy net değeri: Serbest USD + Açık kripto pozisyonlarının anlık piyasa değeri.",
+        "portfolio_nav_help": "Toplam portföy net değeri: Serbest USD + Açık hisse pozisyonlarının anlık piyasa değeri.",
         "net_return": "Toplam Net Getiri",
         "net_return_help": "Başlangıç bakiyesi ($10,000) üzerinden elde ettiğiniz kâr/zarar yüzdesi.",
         "open_pos_count": "Açık Pozisyonlar",
-        "open_pos_count_help": "Şu anda taşımakta olduğunuz aktif spot cüzdan varlıklarının sayısı.",
+        "open_pos_count_help": "Şu anda taşımakta olduğunuz aktif hisse senedi pozisyonlarının sayısı.",
         "bot_active": "🟢 BOT AKTİF - SİNYAL BEKLENİYOR",
-        "bot_active_desc": "Matematik motoru 1H Binance spot grafiklerinde RSI, EMA ve MACD kesişimlerini 7/24 izliyor...",
-        "bot_offline": "🔴 BOT ÇEVRİMDIŞI - ARKA PLAN ÇALIŞMIYOR",
-        "bot_offline_desc": "Matematik motoru ve pozisyon koruyucu aktif değil. Lütfen terminalden 'python worker.py' komutunu çalıştırın.",
+        "bot_active_desc": "Matematik motoru 1H hisse senedi grafiklerinde RSI, EMA ve MACD kesişimlerini izliyor...",
+        "bot_offline": "🔴 BOT ÇEVRİMDIŞI / UYKU MODUNDA",
+        "bot_offline_desc": "Matematik motoru ve pozisyon koruyucu aktif değil (Sistem Uykuda). Lütfen üstteki butondan başlatın.",
         "in_pos": "🔴 POZİSYONDAYIM: {asset} ({arrow} {pnl:+.2f}%)",
         "pos_details": "Giriş: ${entry:,.2f} | Fiyat: ${live:,.2f} | Stop-Loss: ${sl:,.2f} | Take-Profit: ${tp:,.2f}",
         "tab_a": "📈 Canlı Takip Paneli",
@@ -80,7 +80,7 @@ T = {
         "chart_title": "{asset} Grafik Analizi (Zaman Dilimi: Europe/Istanbul UTC+3)",
         "crossover_inspector": "📊 Matematiksel İndikatör Sinyal Analizörü",
         "crossover_inspector_desc": "Python arka planda matematiksel indikatörleri hesaplayıp tarıyor. Aşağıdan anlık durumları görebilirsiniz:",
-        "col_asset": "Kripto Varlık",
+        "col_asset": "Hisse Senedi",
         "col_price": "Son Fiyat",
         "col_rsi": "RSI (14) Durumu",
         "col_macd": "MACD Crossover",
@@ -104,7 +104,7 @@ T = {
         "news_feed_title": "📰 Taranan En Güncel Haberler",
         "news_freshness": "Yayınlanma: {time}",
         "manual_order_placement": "🛒 Manuel İşlem Gönderme",
-        "pos_exists_warn": "⚠️ Bu coin için aktif açık pozisyonunuz bulunuyor. Yeni alım yapamazsınız, pozisyonu kapatabilirsiniz.",
+        "pos_exists_warn": "⚠️ Bu hisse için aktif açık pozisyonunuz bulunuyor. Yeni alım yapamazsınız, pozisyonu kapatabilirsiniz.",
         "close_pos_btn": "💰 Pozisyonu Manuel Kapat (SELL)",
         "buy_order_btn": "🛒 Manuel Alım Yap (BUY) - SL/TP Korumalı",
         "sell_order_btn": "💰 Manuel SAT (SELL)",
@@ -125,7 +125,7 @@ T = {
         "analyze_on_chart": "Grafik Üzerinde İncele",
         "recent_trades_sim": "📜 Son Gerçekleşen İşlemler (Simüle)",
         "no_trades_yet": "💡 Henüz bir işlem gerçekleşmedi. Bot piyasadaki indikatör kesişimlerini takip ediyor.",
-        "coin_to_analyze": "Analiz Edilecek Coin",
+        "coin_to_analyze": "Analiz Edilecek Hisse",
         "asset_type": "Varlık Tipi",
         "portfolio_risk_share": "Portföy Risk Payı",
         "insufficient_bal_err": "Bakiye yetersiz! Alım işlemi gerçekleştirmek için en az $10 USD serbest bakiye gereklidir.",
@@ -148,8 +148,8 @@ T = {
         "col_pair": "İşlem Çifti",
         "col_side": "İşlem Yönü",
         "checklist_title": "🔍 Detaylı İndikatör Sinyal Kontrol Listesi",
-        "checklist_desc": "Seçili kripto varlık için botun alım/satım kurallarını tek tek denetleyin. Hangi kuralın gerçekleşmediğini ve neden yapay zekanın uykuda olduğunu buradan görebilirsiniz.",
-        "checklist_select_asset": "İncelenecek Kripto Varlık",
+        "checklist_desc": "Seçili varlık için botun alım/satım kurallarını tek tek denetleyin. Hangi kuralın gerçekleşmediğini ve neden yapay zekanın uykuda olduğunu buradan görebilirsiniz.",
+        "checklist_select_asset": "İncelenecek Hisse / Varlık",
         "chk_buy_rules": "🟢 ALIM (BUY) KOŞULLARI KONTROLÜ",
         "chk_sell_rules": "🔴 SATIM (SELL) KOŞULLARI KONTROLÜ",
         "chk_rsi_buy": "RSI Aşırı Satım: RSI 30'un altında olmalı veya 30'u yukarı kesmeli. Mevcut RSI: {rsi_c} (Önceki: {rsi_p})",
@@ -182,8 +182,8 @@ T = {
     "EN": {
         "title": "Sentix | Premium SaaS Control Panel",
         "subtitle": "Premium Leverage-Free AI Algorithmic Trading & Real-Time Position Guardian Control Panel",
-        "select_pairs": "Select Active Trading Pairs",
-        "select_pairs_help": "Binance spot trading pairs that the bot scans and searches for crossover signals in the background.",
+        "select_pairs": "Select Active Stocks/Indices",
+        "select_pairs_help": "Stock tickers and indices that the bot scans and searches for crossover signals in the background.",
         "sum_model": "Summarization Model (Step 1 - Token Efficient)",
         "sum_model_help": "The fast, low-cost Gemini Flash model used to clean, summarize, and digest scraped Google News articles.",
         "sent_model": "Sentiment Analysis Model (Step 2 - Advanced)",
@@ -194,31 +194,31 @@ T = {
         "sl_pct_help": "If the price drops below this percentage from your entry level, the position is instantly closed to limit losses.",
         "tp_pct": "Take-Profit Percentage %",
         "tp_pct_help": "If the price rises above this percentage from your entry level, the position is instantly closed to lock in profits.",
-        "exchange_name": "Active Exchange (CCXT)",
-        "exchange_name_help": "The exchange from which market data will be fetched (e.g., binance, bybit, kraken, okx, gateio, coinbase).",
+        "exchange_name": "Active Provider (YFinance)",
+        "exchange_name_help": "The Yahoo Finance data provider used to fetch market candles.",
         "min_sentiment": "Min AI Sentiment Threshold",
         "min_sentiment_help": "The minimum sentiment score (e.g. 3) required from Gemini to approve and execute a trade after a technical trigger.",
         "news_freshness_hours": "News Freshness Limit (Hours)",
-        "news_freshness_hours_help": "The maximum age of news articles to include in Gemini analysis. E.g., 24 hours is ideal for 1H/4H charts.",
+        "news_freshness_hours_help": "The maximum age of news articles to include in Gemini analysis. E.g., 24 hours is ideal for stock charts.",
         "quick_actions": "⚙️ Quick Actions",
         "sync_tick": "🚀 Sync Tick",
         "sync_tick_help": "Force updates the database, calculates indicators, and triggers the background scanning loop immediately.",
         "reset_port": "🔄 Reset Portfolio",
         "reset_port_help": "Resets virtual balance to $10,000 USD and wipes out all trades, candles, and log histories.",
-        "warning_select_pair": "⚠️ Please select at least one active trading pair in the Config Panel sidebar.",
+        "warning_select_pair": "⚠️ Please select at least one active asset in the Config Panel sidebar.",
         "nav_metrics": "Portfolio Status (NAV Calculation)",
         "free_usd": "USD Free Balance",
         "free_usd_help": "The available, unallocated cash dollar amount in your portfolio.",
         "portfolio_nav": "Portfolio NAV Value",
-        "portfolio_nav_help": "Total Net Asset Value: Free USD + current market valuation of all active crypto holdings.",
+        "portfolio_nav_help": "Total Net Asset Value: Free USD + current market valuation of all active stock holdings.",
         "net_return": "Total Net Return",
         "net_return_help": "The profit/loss percentage achieved based on your initial starting capital of $10,000 USD.",
         "open_pos_count": "Open Positions",
-        "open_pos_count_help": "Number of active crypto spot holdings currently in your portfolio.",
+        "open_pos_count_help": "Number of active stock holdings currently in your portfolio.",
         "bot_active": "🟢 BOT ACTIVE - WAITING FOR SIGNAL",
-        "bot_active_desc": "Math engine is scanning 1H Binance spot charts for RSI, EMA, and MACD crossovers 24/7...",
-        "bot_offline": "🔴 BOT OFFLINE - BACKGROUND WORKER NOT RUNNING",
-        "bot_offline_desc": "Math engine and position guardian are inactive. Please run 'python worker.py' from your terminal.",
+        "bot_active_desc": "Math engine is scanning 1H stock charts for RSI, EMA, and MACD crossovers during market hours...",
+        "bot_offline": "🔴 BOT OFFLINE / SYSTEM IDLE",
+        "bot_offline_desc": "Math engine and position guardian are inactive (System Idle). Please start the bot from the sidebar toggle.",
         "in_pos": "🔴 IN POSITION: {asset} ({arrow} {pnl:+.2f}%)",
         "pos_details": "Entry: ${entry:,.2f} | Price: ${live:,.2f} | Stop-Loss: ${sl:,.2f} | Take-Profit: ${tp:,.2f}",
         "tab_a": "📈 Live Monitoring & Indicators Analysis",
@@ -227,7 +227,7 @@ T = {
         "chart_title": "{asset} Chart Analysis (Timezone: Europe/Istanbul UTC+3)",
         "crossover_inspector": "📊 Mathematical Indicator Signal Analyzer",
         "crossover_inspector_desc": "Python is calculating mathematical indicators and scanning in the background. Live indicators state:",
-        "col_asset": "Crypto Asset",
+        "col_asset": "Stock Asset",
         "col_price": "Last Price",
         "col_rsi": "RSI (14) State",
         "col_macd": "MACD Crossover",
@@ -251,7 +251,7 @@ T = {
         "news_feed_title": "📰 Scraped Latest News Feed",
         "news_freshness": "Published: {time}",
         "manual_order_placement": "🛒 Manual Order Placement",
-        "pos_exists_warn": "⚠️ You have an active open position for this coin. You cannot open a new position, but you can close the active one.",
+        "pos_exists_warn": "⚠️ You have an active open position for this stock. You cannot open a new position, but you can close the active one.",
         "close_pos_btn": "💰 Close Position Manually (SELL)",
         "buy_order_btn": "🛒 Manual BUY - SL/TP Protected",
         "sell_order_btn": "💰 Manual SELL",
@@ -272,7 +272,7 @@ T = {
         "analyze_on_chart": "Analyze on Chart",
         "recent_trades_sim": "📜 Recent Executed Trades (Simulated)",
         "no_trades_yet": "💡 No trades have executed yet. The bot is monitoring indicator crossovers.",
-        "coin_to_analyze": "Coin to Analyze",
+        "coin_to_analyze": "Stock to Analyze",
         "asset_type": "Asset Type",
         "portfolio_risk_share": "Portfolio Risk Share",
         "insufficient_bal_err": "Insufficient balance! A minimum of $10 USD free balance is required to execute a BUY.",
@@ -296,7 +296,7 @@ T = {
         "col_side": "Side",
         "checklist_title": "🔍 Detailed Indicator Signal Checklist",
         "checklist_desc": "Verify the bot's trading rules step-by-step for the selected asset. See exactly which condition failed and why the AI remains in sleep mode.",
-        "checklist_select_asset": "Crypto Asset to Inspect",
+        "checklist_select_asset": "Stock Asset to Inspect",
         "chk_buy_rules": "🟢 BUY CONDITIONS CHECKLIST",
         "chk_sell_rules": "🔴 SELL CONDITIONS CHECKLIST",
         "chk_rsi_buy": "RSI Oversold: RSI must drop below 30 or cross back above 30. Current RSI: {rsi_c} (Previous: {rsi_p})",
@@ -1113,6 +1113,26 @@ st.session_state["lang"] = "TR" if lang_opt == "Türkçe" else "EN"
 st.sidebar.markdown(f"<h2 style='text-align: center; color: #FFFFFF;'>⚡ {t('title').split('|')[0].strip()}</h2>", unsafe_allow_html=True)
 st.sidebar.markdown("<hr style='margin-top: 0; margin-bottom: 1.5rem; border-color: rgba(255,255,255,0.05);'>", unsafe_allow_html=True)
 
+# Start/Stop Bot controller
+st.sidebar.markdown("### 🤖 Bot Controller")
+is_running = get_config("bot_running", "false") == "true"
+btn_label = "⏹️ STOP BOT / DURDUR" if is_running else "▶️ START BOT / BAŞLAT"
+if st.sidebar.button(btn_label, use_container_width=True):
+    if not is_running:
+        from worker import validate_api_key_for_start
+        if validate_api_key_for_start():
+            save_config("bot_running", "true")
+            st.sidebar.success("Bot started!")
+            time.sleep(0.5)
+            st.rerun()
+        else:
+            st.sidebar.error("❌ Google Gemini API Key is missing. Cannot start.")
+    else:
+        save_config("bot_running", "false")
+        st.sidebar.warning("Bot stopped.")
+        time.sleep(0.5)
+        st.rerun()
+
 # Gemini API Key Status (Removed input field from UI to prevent exposure over HTTP)
 from ai.sentiment_analyzer import load_api_keys
 sa_keys = load_api_keys()
@@ -1128,14 +1148,11 @@ else:
 
 # Active Trading Assets Configuration
 ALL_SUPPORTED_PAIRS = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", 
-    "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT", 
-    "NEAR/USDT", "MATIC/USDT", "SUI/USDT", "APT/USDT", "OP/USDT", 
-    "ARB/USDT", "LTC/USDT", "TRX/USDT", "XLM/USDT", "UNI/USDT", 
-    "ATOM/USDT", "INJ/USDT", "TIA/USDT", "GRT/USDT", "FET/USDT", 
-    "RNDR/USDT", "SHIB/USDT", "ETC/USDT", "FIL/USDT", "ICP/USDT"
+    "AAPL/USD", "MSFT/USD", "NVDA/USD", "AMD/USD", "ARM/USD", "TSM/USD", 
+    "AVGO/USD", "ASML/USD", "AMZN/USD", "GOOGL/USD", "META/USD", "TSLA/USD", 
+    "QQQ/USD", "SPY/USD"
 ]
-env_assets = os.getenv("SELECTED_ASSETS", "BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,XRP/USDT,ADA/USDT,DOGE/USDT,AVAX/USDT,LINK/USDT,DOT/USDT")
+env_assets = os.getenv("SELECTED_ASSETS", "AAPL/USD,MSFT/USD,NVDA/USD,AMD/USD,ARM/USD,TSM/USD,AVGO/USD,ASML/USD,AMZN/USD,GOOGL/USD,META/USD,TSLA/USD,QQQ/USD,SPY/USD")
 db_assets = get_config("selected_assets", "")
 active_assets_str = db_assets if db_assets else env_assets
 
@@ -1154,7 +1171,7 @@ if ",".join(asset_list) != db_assets:
     st.sidebar.info(t("active_pairs_updated"))
 
 # Active Exchange Configuration
-env_exchange = os.getenv("EXCHANGE_NAME", "binance")
+env_exchange = os.getenv("EXCHANGE_NAME", "yfinance")
 db_exchange = get_config("exchange_name", "")
 active_exchange = db_exchange if db_exchange else env_exchange
 
@@ -1166,7 +1183,7 @@ exchange_name_input = st.sidebar.text_input(
 
 if exchange_name_input != db_exchange:
     save_config("exchange_name", exchange_name_input)
-    st.sidebar.info("Borsa tercihi güncellendi!" if st.session_state["lang"] == "TR" else "Exchange preference updated!")
+    st.sidebar.info("Sağlayıcı tercihi güncellendi!" if st.session_state["lang"] == "TR" else "Provider preference updated!")
 
 # AI Models Settings
 summarizer_model_default = os.getenv("SUMMARIZER_MODEL", "gemini-3.1-flash-lite")
@@ -1310,17 +1327,19 @@ with col_action2:
 # Reset Settings to Optimal Defaults Button
 if st.sidebar.button(t("reset_settings"), width="stretch", help=t("reset_settings_help")):
     try:
-        # Optimal default settings calculated for 1H candle, Binance spot, moderate risk
+        # Optimal default settings calculated for stocks
         optimal_defaults = {
-            "risk_percentage": "2.0",       # 2% NAV per trade — conservative position sizing
-            "stop_loss_pct": "3.0",         # 3% SL — tight enough to limit drawdown, wide enough to avoid noise
-            "take_profit_pct": "6.0",       # 6% TP — 2:1 reward/risk ratio (industry standard minimum)
-            "min_ai_sentiment_threshold": "3",  # Score >= 3 out of 10 — filters noise but allows moderate signals
-            "fee_pct": "0.001",             # 0.1% — Binance default spot fee (VIP0 maker/taker)
+            "risk_percentage": "2.0",       # 2% NAV per trade
+            "stop_loss_pct": "2.0",         # 2% SL
+            "take_profit_pct": "5.0",       # 5% TP
+            "trailing_stop_loss_pct": "2.0", # 2% Trailing Stop
+            "min_ai_sentiment_threshold": "3",  # Score >= 3
+            "fee_pct": "0.0005",             # 0.05% — standard broker fee
             "summarizer_model": "gemini-3.1-flash-lite",
             "sentiment_model": "gemini-3.5-flash",
             "live_mode": "false",
             "news_freshness_hours": "24",
+            "vpn_check_enabled": "false"
         }
         for key, value in optimal_defaults.items():
             save_config(key, value)
@@ -1570,14 +1589,14 @@ vpn_status = get_config("vpn_status")
 if vpn_status == "disconnected":
     st.markdown(f"""
     <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid #EF4444; border-radius: 12px; padding: 1.2rem; margin-bottom: 1.5rem; box-shadow: 0 0 15px rgba(239, 68, 68, 0.15);">
-        <h3 style="margin: 0; color: #EF4444; font-size: 1.15rem; font-weight: 700;">
-            ⚠️ VPN Bağlantısı Kesildi! / VPN Connection Down!
-        </h3>
-        <p style="margin: 0.3rem 0 0 0; color: #E2E8F0; font-size: 0.85rem;">
-            Binance bağlantısı kesildi. Algoritmik işlemler ve SL/TP takibi askıya alındı. Bağlantı sağlandığında otomatik olarak devam edecektir.
-            / Connection to Binance is lost. Algorithmic trading and SL/TP guardian checks are suspended. Will resume once connection is established.
-        </p>
-    </div>
+         <h3 style="margin: 0; color: #EF4444; font-size: 1.15rem; font-weight: 700;">
+             ⚠️ VPN Bağlantısı Kesildi! / VPN Connection Down!
+         </h3>
+         <p style="margin: 0.3rem 0 0 0; color: #E2E8F0; font-size: 0.85rem;">
+             Veri kaynağı bağlantısı kesildi. Algoritmik işlemler ve SL/TP takibi askıya alındı. Bağlantı sağlandığında otomatik olarak devam edecektir.
+             / Connection to data provider is lost. Algorithmic trading and SL/TP guardian checks are suspended. Will resume once connection is established.
+         </p>
+     </div>
     """, unsafe_allow_html=True)
 
 # 2. Show active positions PnL cards

@@ -1,30 +1,32 @@
 services:
-  vpn:
-    image: qmcgaw/gluetun
-    container_name: sentix_vpn
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    environment:
-      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER:-protonvpn}
-      - VPN_TYPE=${VPN_TYPE:-openvpn}
-      # ProtonVPN or NordVPN credentials (set VPN_USER and VPN_PASSWORD in .env)
-      - OPENVPN_USER=${VPN_USER:-your_openvpn_username_here}
-      - OPENVPN_PASSWORD=${VPN_PASSWORD:-your_openvpn_password_here}
-      # If using WireGuard protocol
-      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY:-}
-      - FREE_ONLY=${VPN_FREE_ONLY:-on}
-      - SERVER_COUNTRIES=${VPN_COUNTRIES:-Netherlands}
-      - HTTPPROXY=on
-    restart: always
+  # VPN service is commented out since the bot has migrated to Stock markets and runs on an Amsterdam server.
+  # If you ever want to re-enable VPN, uncomment this block and the depends_on vpn rules below.
+  # vpn:
+  #   image: qmcgaw/gluetun
+  #   container_name: sentix_vpn
+  #   cap_add:
+  #     - NET_ADMIN
+  #   devices:
+  #     - /dev/net/tun:/dev/net/tun
+  #   environment:
+  #     - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER:-protonvpn}
+  #     - VPN_TYPE=${VPN_TYPE:-openvpn}
+  #     - OPENVPN_USER=${VPN_USER:-your_openvpn_username_here}
+  #     - OPENVPN_PASSWORD=${VPN_PASSWORD:-your_openvpn_password_here}
+  #     - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY:-}
+  #     - FREE_ONLY=${VPN_FREE_ONLY:-on}
+  #     - SERVER_COUNTRIES=${VPN_COUNTRIES:-Netherlands}
+  #     - HTTPPROXY=on
+  #   restart: always
 
   ui:
     build: .
     container_name: sentix_ui
     restart: always
+    # Binding to "8501:8501" instead of "127.0.0.1:8501:8501" to make it accessible remotely on the VPS.
+    # Secure this with a firewall (ufw) or Nginx reverse proxy if deploying to production.
     ports:
-      - "127.0.0.1:8501:8501"
+      - "8501:8501"
     volumes:
       - .:/app
     environment:
@@ -33,8 +35,9 @@ services:
     env_file:
       - .env
     depends_on:
-      vpn:
-        condition: service_started
+      # Uncomment if using VPN container
+      # vpn:
+      #   condition: service_started
       worker:
         condition: service_started
     healthcheck:
@@ -57,6 +60,7 @@ services:
     env_file:
       - .env
     command: python worker.py
-    depends_on:
-      vpn:
-        condition: service_started
+    # depends_on:
+    #   vpn:
+    #     condition: service_started
+

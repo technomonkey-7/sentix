@@ -1,78 +1,62 @@
 import time
 import os
 import math
-import ccxt
+import yfinance as yf
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from core.db import (
     init_db, log_event, save_candles, get_portfolio, 
     update_portfolio, record_trade, get_config, save_config,
-    get_active_position, get_all_active_positions, close_active_position
+    get_active_position, get_all_active_positions, close_active_position,
+    get_connection
 )
 from core.data_fetcher import fetch_ohlcv, fetch_asset_news
-from core.math_engine import calculate_indicators, check_triggers
-from ai.sentiment_analyzer import analyze_sentiment
+from core.math_engine import calculate_indicators, check_triggers, calculate_support_resistance, check_candlestick_patterns
 
 # Load environment configurations
 load_dotenv()
 
-# Shared exchange instance for real-time price lookups
-_exchange = None
 _last_analyzed_timestamps = {}
 _last_ai_check_times = {}
-def _get_exchange():
-    """Returns a shared configured ccxt exchange instance."""
-    global _exchange
-    if _exchange is None:
-        exchange_name = get_config("exchange_name") or os.getenv("EXCHANGE_NAME", "binance")
-        exchange_class = getattr(ccxt, exchange_name.lower(), ccxt.binance)
-        
-        exchange_config = {
-            'enableRateLimit': True,
-            'options': {'defaultType': 'spot'}
-        }
-        
-        # Add proxy configuration if defined in env
-        http_proxy = os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
-        https_proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
-        if http_proxy or https_proxy:
-            exchange_config['proxies'] = {}
-            if http_proxy:
-                exchange_config['proxies']['http'] = http_proxy
-            if https_proxy:
-                exchange_config['proxies']['https'] = https_proxy
-                
-        _exchange = exchange_class(exchange_config)
-    return _exchange
 
 def fetch_realtime_price(symbol):
     """
-    Fetches the current real-time price for a symbol using ccxt ticker.
-    Falls back to the latest DB candle close price if the ticker call fails.
+    Fetches the current real-time price for a stock symbol using yfinance.
+    Falls back to the latest DB candle close price if the yfinance call fails.
     This is critical for accurate SL/TP monitoring.
     """
+    ticker_symbol = symbol.split('/')[0] if '/' in symbol else symbol
     max_retries = 3
     retry_delay = 1.0
     
     for attempt in range(max_retries):
         try:
-            exchange = _get_exchange()
-            ticker = exchange.fetch_ticker(symbol)
-            price = float(ticker['last'])
-            return price
+            ticker = yf.Ticker(ticker_symbol)
+            price = float(ticker.fast_info['lastPrice'])
+            if price > 0:
+                return price
         except Exception as e:
-            log_event("WARNING", "WORKER", f"Attempt {attempt+1} failed to fetch real-time ticker for {symbol}: {e}")
+            # Fallback to history 1-minute candle
+            try:
+                ticker = yf.Ticker(ticker_symbol)
+                df_history = ticker.history(period="1d", interval="1m")
+                if not df_history.empty:
+                    price = float(df_history['Close'].iloc[-1])
+                    return price
+            except Exception:
+                pass
+            
+            log_event("WARNING", "WORKER", f"Attempt {attempt+1} failed to fetch real-time price for {symbol}: {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             else:
                 live_mode = (get_config("live_mode") or os.getenv("LIVE_MODE", "false")).lower() == "true"
                 if live_mode:
-                    log_event("WARNING", "WORKER", f"Real-time ticker fetch failed for {symbol} in LIVE MODE. Refusing database price fallback.")
+                    log_event("WARNING", "WORKER", f"Real-time price fetch failed for {symbol} in LIVE MODE. Refusing database price fallback.")
                     return None
 
-                log_event("WARNING", "WORKER", f"Real-time ticker fetch failed for {symbol} after {max_retries} attempts. Falling back to DB candle price.")
+                log_event("WARNING", "WORKER", f"Real-time price fetch failed for {symbol} after {max_retries} attempts. Falling back to DB candle price.")
                 # Fallback to latest DB candle close
-                from core.db import get_connection
                 try:
                     conn = get_connection()
                     cursor = conn.cursor()
@@ -88,7 +72,7 @@ def fetch_realtime_price(symbol):
 def calculate_total_nav(portfolio):
     """
     Calculates the Net Asset Value (NAV) of the portfolio.
-    USD balance + value of all crypto holdings using current market prices.
+    USD balance + value of all stock holdings using current market prices.
     """
     total_nav = portfolio.get("USD", {}).get("balance", 0.0)
     for asset_ticker, data in portfolio.items():
@@ -97,9 +81,6 @@ def calculate_total_nav(portfolio):
         balance = data.get("balance", 0.0)
         avg_entry = data.get("avg_entry_price", 0.0)
         if balance > 0:
-            # We will use the latest database candle price as the current price estimate for the valuation
-            # If the database candles are not found, fallback to avg_entry_price
-            from core.db import get_connection
             current_price = avg_entry
             try:
                 conn = get_connection()
@@ -118,6 +99,19 @@ def calculate_total_nav(portfolio):
                 pass
             total_nav += balance * current_price
     return total_nav
+
+def validate_api_key_for_start():
+    """
+    Checks if there is a Gemini API Key available.
+    """
+    from ai.sentiment_analyzer import load_api_keys
+    keys = load_api_keys()
+    if keys:
+        return True
+    key = get_config("gemini_api_key") or os.getenv("GEMINI_API_KEY")
+    if key and key.strip() != "":
+        return True
+    return False
 
 def run_worker_cycle(force=False):
     """
@@ -158,19 +152,30 @@ def _execute_cycle_logic(force=False):
     2. Fetches prices and computes indicators for all active assets.
     3. Runs real-time SL/TP monitor to liquidate open positions immediately when hit.
     4. Runs deterministic technical analysis to check for crossover triggers.
-    5. Double-checks triggers with 4-hour timeframe trend and volume moving average.
-    6. Batches news scraping and structured Gemini API sentiment checks for all candidates in one call.
+    5. Double-checks triggers with 4-hour timeframe trend, volume, support levels, and patterns.
+    6. Batches news scraping and structured Gemini API sentiment checks.
     7. Handles paper trading buy/sell executions and state saves.
     """
     # Check if automatic bot is paused
-    if not force and get_config("bot_paused") == "true":
-        log_event("WARNING", "WORKER", "Algorithmic market analysis tick skipped because automatic trading is PAUSED. (SL/TP Guardian remains active).")
+    if not force and get_config("bot_running", "false") == "false":
+        log_event("WARNING", "WORKER", "Algorithmic market analysis tick skipped because automatic trading is Durduruldu (Idle).")
         return
 
     log_event("INFO", "WORKER", "Starting algorithmic market analysis tick...")
     
+    # Validate API key
+    if not validate_api_key_for_start():
+        log_event("ERROR", "WORKER", "Google Gemini API Key is missing. Disabling bot execution.")
+        save_config("bot_running", "false")
+        try:
+            from core.telegram_bot import send_telegram_message
+            send_telegram_message("❌ *Hata:* Google Gemini API anahtarı eksik olduğu için bot başlatılamadı.")
+        except Exception:
+            pass
+        return
+
     # 1. Fetch config settings
-    assets_str = get_config("selected_assets") or os.getenv("SELECTED_ASSETS", "BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,ADA/USDT,XRP/USDT,DOT/USDT,AVAX/USDT,LINK/USDT,NEAR/USDT,MATIC/USDT")
+    assets_str = get_config("selected_assets") or os.getenv("SELECTED_ASSETS", "AAPL/USD,MSFT/USD,NVDA/USD,AMD/USD,ARM/USD,TSM/USD,AVGO/USD,ASML/USD,AMZN/USD,GOOGL/USD,META/USD,TSLA/USD,QQQ/USD,SPY/USD")
     active_assets = [a.strip() for a in assets_str.split(",") if a.strip()]
     
     sentiment_threshold = int(get_config("min_ai_sentiment_threshold") or os.getenv("MIN_AI_SENTIMENT_THRESHOLD", "3"))
@@ -190,7 +195,7 @@ def _execute_cycle_logic(force=False):
     # Process each asset independently for technical crossover checking
     for asset in active_assets:
         try:
-            # Update heartbeat inside the loop so UI knows bot is alive even during a long analysis cycle
+            # Update heartbeat inside the loop so UI knows bot is alive
             try:
                 save_config("worker_heartbeat", datetime.now(timezone.utc).isoformat())
             except Exception:
@@ -229,15 +234,15 @@ def _execute_cycle_logic(force=False):
             
             save_candles(candles_list)
             
-            # Skip trading decisions on simulated (fake) data
+            # Skip trading decisions on simulated data
             is_simulated = False
             if '_is_simulated' in candles_df.columns:
                 is_simulated = bool(candles_df['_is_simulated'].iloc[0])
             if is_simulated:
-                log_event("WARNING", "WORKER", f"⚠️ {asset} is using SIMULATED data (exchange unreachable). Skipping trade decisions for safety.")
+                log_event("WARNING", "WORKER", f"⚠️ {asset} is using SIMULATED data (YFinance offline fallback). Skipping trade decisions for safety.")
                 continue
             
-            # Extract latest close price AND fetch real-time price for SL/TP
+            # Extract latest close price AND fetch real-time price
             completed_candle = candles_df.iloc[-2]
             candle_close_price = float(completed_candle["close"]) # For indicator analysis
             completed_timestamp = completed_candle["timestamp"]
@@ -254,7 +259,7 @@ def _execute_cycle_logic(force=False):
             else:
                 current_price = realtime_price
             
-            # Log verbose mathematical descriptions
+            # Log technical values
             rsi_val = completed_candle.get("rsi")
             macd_val = completed_candle.get("macd")
             sig_val = completed_candle.get("macd_signal")
@@ -262,7 +267,7 @@ def _execute_cycle_logic(force=False):
             
             if rsi_val is not None:
                 rsi_status = "Aşırı Satım (Boğa Fırsatı)" if rsi_val <= 30 else ("Aşırı Alım (Ayı Riski)" if rsi_val >= 70 else "Nötr Bölge")
-                log_event("INFO", "MATH", f"{asset} - RSI: {rsi_val:.2f} ({rsi_status}, Eşik değer: 30)")
+                log_event("INFO", "MATH", f"{asset} - RSI: {rsi_val:.2f} ({rsi_status})")
             else:
                 log_event("INFO", "MATH", f"{asset} - RSI: Veri yetersiz")
                 
@@ -287,7 +292,6 @@ def _execute_cycle_logic(force=False):
                 buy_price = active_pos.get("price")
                 log_event("INFO", "WORKER", f"Active position found for {asset} at entry price ${buy_price:.2f}. SL: ${sl_val:.2f}, TP: ${tp_val:.2f}. Real-time Price: ${current_price:.2f}")
                 
-                # Re-read portfolio from DB before any liquidation to avoid race conditions
                 portfolio = get_portfolio()
                 fee_pct = float(get_config("fee_pct", "0.001"))
                 
@@ -335,7 +339,6 @@ def _execute_cycle_logic(force=False):
             global _last_analyzed_timestamps
             already_analyzed = (not force and _last_analyzed_timestamps.get(asset) == completed_timestamp)
             
-            # Fresh portfolio state (we will read it here for checks)
             portfolio = get_portfolio()
             usd_balance = portfolio.get("USD", {}).get("balance", 0.0)
             asset_ticker = asset.split("/")[0]
@@ -348,7 +351,6 @@ def _execute_cycle_logic(force=False):
             if trigger_side:
                 log_event("WARNING", "WORKER", f"💥 Technical [{trigger_side}] Trigger detected for {asset}! Reason: {trigger_reason}")
                 
-                # Check portfolio constraints first
                 if trigger_side == "BUY" and usd_balance < 10.0:
                     log_event("INFO", "WORKER", f"Insufficient USD balance (${usd_balance:.2f}) to perform BUY on {asset}. Skipping.")
                     continue
@@ -356,12 +358,15 @@ def _execute_cycle_logic(force=False):
                     log_event("INFO", "WORKER", f"No holding of {asset_ticker} ({asset_balance:.4f}) to perform SELL. Skipping.")
                     continue
                 
-                # If we are BUY and we already have an active position, skip to avoid double exposure
                 if trigger_side == "BUY" and active_pos:
                     log_event("INFO", "WORKER", f"Active position already exists for {asset}. Skipping double-exposure BUY order.")
                     continue
                 
-                # ---------------- DOUBLE-CHECK MATH FILTER (4h Trend & Volume) ----------------
+                # Check for exit stability: Ignore simple 1H technical exits
+                if trigger_side == "SELL":
+                    log_event("INFO", "WORKER", f"Ignoring 1H technical SELL crossover trigger for {asset} to prevent premature exit. Evaluating macro confluence...")
+                
+                # ---------------- DOUBLE-CHECK MATH FILTER (4h Trend, Volume, Support & Patterns) ----------------
                 log_event("INFO", "WORKER", f"Performing Double-Check Math Filter for {asset} on 4h timeframe...")
                 is_4h_confirmed = False
                 is_volume_confirmed = False
@@ -410,9 +415,42 @@ def _execute_cycle_logic(force=False):
                 else:
                     log_event("WARNING", "WORKER", f"Could not fetch 4h candles for {asset}. Defaulting 4h trend confirmation to False.")
                 
+                # 3. Support & Candlestick pattern detection
+                supports, resistances = calculate_support_resistance(candles_df)
+                detected_patterns = check_candlestick_patterns(candles_df)
+                
+                is_near_support = False
+                for sup in supports:
+                    if abs(current_price - sup) / sup <= 0.015: # Within 1.5%
+                        is_near_support = True
+                        break
+                        
+                is_pattern_confirmed = is_near_support or (len(detected_patterns) > 0)
+                pattern_desc = ", ".join(detected_patterns) if detected_patterns else "None"
+                double_check_reason += f" Pattern/Support confirmed: {is_pattern_confirmed} (Patterns: {pattern_desc}, Near Support: {is_near_support})."
+                
                 log_event("INFO", "WORKER", f"Double-Check Filter outcomes for {asset}: {double_check_reason}")
                 
-                # Add to batch candidates (No longer skipping!)
+                # Format technical summary for Gemini prompt context
+                support_str = ", ".join([f"${s:.2f}" for s in supports]) if supports else "None"
+                res_str = ", ".join([f"${r:.2f}" for r in resistances]) if resistances else "None"
+                
+                rsi_str = f"{rsi_val:.1f}" if rsi_val is not None else "0.0"
+                macd_str = f"{macd_val:.4f}" if macd_val is not None else "0.0"
+                sig_str = f"{sig_val:.4f}" if sig_val is not None else "0.0"
+                ema_str = f"${ema_val:.2f}" if ema_val is not None else "0.0"
+                
+                tech_summary = (
+                    f"Asset: {asset}\n"
+                    f"Current Price: ${current_price:.2f}\n"
+                    f"1H Indicators - RSI: {rsi_str}, MACD: {macd_str}, Signal: {sig_str}, EMA 20: {ema_str}\n"
+                    f"Candlestick Patterns: {pattern_desc}\n"
+                    f"Support Levels: {support_str}\n"
+                    f"Resistance Levels: {res_str}\n"
+                    f"Macro Trend (4H): {'Bullish' if is_4h_confirmed else 'Bearish'}\n"
+                    f"Volume Trend: {'Expanding' if is_volume_confirmed else 'Flat/Weak'}\n"
+                )
+                
                 candidates_to_analyze.append({
                     "asset": asset,
                     "trigger_side": trigger_side,
@@ -422,12 +460,13 @@ def _execute_cycle_logic(force=False):
                     "asset_ticker": asset_ticker,
                     "active_pos": active_pos,
                     "is_4h_confirmed": is_4h_confirmed,
-                    "is_volume_confirmed": is_volume_confirmed
+                    "is_volume_confirmed": is_volume_confirmed,
+                    "is_pattern_confirmed": is_pattern_confirmed,
+                    "technical_summary": tech_summary
                 })
                 
         except Exception as asset_err:
             log_event("ERROR", "WORKER", f"Error evaluating {asset} inside tick cycle: {asset_err}")
-            # Reset analyzed timestamp so we can retry on next tick
             if asset in _last_analyzed_timestamps:
                 _last_analyzed_timestamps[asset] = None
             import traceback
@@ -437,7 +476,6 @@ def _execute_cycle_logic(force=False):
     if candidates_to_analyze:
         log_event("INFO", "WORKER", f"Processing news sentiment for {len(candidates_to_analyze)} candidate assets in a single batch...")
         
-        # Scrape news for each candidate
         batch_input = []
         local_sentiment_overrides = {}
         successful_candidates = []
@@ -463,7 +501,8 @@ def _execute_cycle_logic(force=False):
                 
             batch_input.append({
                 "symbol": c["asset"],
-                "news_items": news
+                "news_items": news,
+                "technical_summary": c["technical_summary"]
             })
             successful_candidates.append(c)
             
@@ -491,7 +530,6 @@ def _execute_cycle_logic(force=False):
         for sym, res in local_sentiment_overrides.items():
             ai_map[sym] = res
         
-        # Refresh portfolio/nav
         portfolio = get_portfolio()
         total_nav = calculate_total_nav(portfolio)
         
@@ -504,7 +542,6 @@ def _execute_cycle_logic(force=False):
             asset_ticker = c["asset_ticker"]
             active_pos = c["active_pos"]
             
-            # Get latest values for usd_balance / asset_balance to account for trades inside the loop
             usd_balance = portfolio.get("USD", {}).get("balance", 0.0)
             asset_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
             
@@ -519,7 +556,7 @@ def _execute_cycle_logic(force=False):
             is_ai_simulated = ai_res.get("is_simulated", False)
             
             if is_ai_simulated:
-                log_event("WARNING", "WORKER", f"⚠️ AI sentiment or news for {asset} is SIMULATED/MOCK. Skipping trade decisions for safety (will retry on next tick).")
+                log_event("WARNING", "WORKER", f"⚠️ AI sentiment or news for {asset} is SIMULATED/MOCK (YFinance / news offline). Skipping trade decisions for safety.")
                 continue
             
             log_event("INFO", "WORKER", f"Gemini Sentiment outcome for {asset}: {sentiment_score} (Reason: '{ai_reason}')")
@@ -531,35 +568,47 @@ def _execute_cycle_logic(force=False):
                     _last_analyzed_timestamps[asset] = completed_timestamp
                     continue
                 
-                # VETO check: Negative sentiment
-                if sentiment_score <= -2:
-                    log_event("WARNING", "WORKER", f"❌ Technical BUY filtered out by Gemini AI. Sentiment is bearish ({sentiment_score}). Veto triggered. Reason: {ai_reason}")
-                    _last_analyzed_timestamps[asset] = completed_timestamp
-                    continue
-                    
-                # Dynamic Position Sizing (Multi-Factor Scoring)
+                # Multi-Factor Scoring Sizing System (0 to 4 points)
                 is_4h_confirmed = c.get("is_4h_confirmed", False)
                 is_volume_confirmed = c.get("is_volume_confirmed", False)
+                is_pattern_confirmed = c.get("is_pattern_confirmed", False)
                 is_news_confirmed = sentiment_score >= sentiment_threshold
                 
-                # Score calculation: base 1 point, plus 1 point for each confirmed factor
-                score_parts = 1
-                scoring_details = "Base Technical Trigger (+25% risk)"
+                score = 0
+                scoring_details = []
                 
                 if is_4h_confirmed:
-                    score_parts += 1
-                    scoring_details += ", 4H Trend confirmed (+25% risk)"
+                    score += 1
+                    scoring_details.append("4H Trend (+1)")
                 if is_volume_confirmed:
-                    score_parts += 1
-                    scoring_details += ", Volume confirmed (+25% risk)"
+                    score += 1
+                    scoring_details.append("Volume (+1)")
                 if is_news_confirmed:
-                    score_parts += 1
-                    scoring_details += ", Positive AI Sentiment confirmed (+25% risk)"
+                    score += 1
+                    scoring_details.append("AI Sentiment (+1)")
+                if is_pattern_confirmed:
+                    score += 1
+                    scoring_details.append("Pattern/Support (+1)")
                     
-                applied_risk_pct = risk_pct * (score_parts / 4.0)
-                sizing_reason = f"Score: {score_parts}/4 | {scoring_details} | Applied risk: {applied_risk_pct:.2f}% of NAV"
+                scoring_str = ", ".join(scoring_details) if scoring_details else "None"
                 
-                # Confirm paper buy execution using Cash Sizing Rule
+                # Score verification checks
+                if score < 2:
+                    log_event("WARNING", "WORKER", f"❌ Technical BUY filtered out. Score: {score}/4 ({scoring_str}). Min required score: 2. Reason: {ai_reason}")
+                    _last_analyzed_timestamps[asset] = completed_timestamp
+                    continue
+                
+                # Dynamic Sizing rules
+                if score == 2:
+                    applied_risk_pct = risk_pct * 0.50
+                    sizing_reason = f"Moderate Confidence (Score 2/4 | {scoring_str}) | Applied risk: {applied_risk_pct:.2f}% of NAV"
+                elif score == 3:
+                    applied_risk_pct = risk_pct * 0.75
+                    sizing_reason = f"High Confidence (Score 3/4 | {scoring_str}) | Applied risk: {applied_risk_pct:.2f}% of NAV"
+                else: # score == 4
+                    applied_risk_pct = risk_pct * 1.00
+                    sizing_reason = f"Maximum Confidence (Score 4/4 | {scoring_str}) | Applied risk: {applied_risk_pct:.2f}% of NAV"
+                
                 trade_value = total_nav * (applied_risk_pct / 100.0)
                 trade_value = min(trade_value, usd_balance)
                 
@@ -572,7 +621,6 @@ def _execute_cycle_logic(force=False):
                 trade_net_value = trade_value * (1 - fee_pct)
                 amount_to_buy = trade_net_value / current_price
                 
-                # Update portfolio memory
                 portfolio["USD"]["balance"] = usd_balance - trade_value
                 
                 existing_asset = portfolio.get(asset_ticker, {"balance": 0.0, "avg_entry_price": 0.0})
@@ -614,19 +662,23 @@ def _execute_cycle_logic(force=False):
                     _last_analyzed_timestamps[asset] = completed_timestamp
                     continue
                 
-                # VETO check: Extremely positive sentiment
-                if sentiment_score >= 3:
-                    log_event("WARNING", "WORKER", f"❌ Technical SELL filtered out by Gemini AI. Extremely bullish sentiment ({sentiment_score}). Veto triggered. Reason: {ai_reason}")
+                # Confluence Exit verification
+                is_4h_bearish = not c.get("is_4h_confirmed", True) # if not confirmed bullish, it is bearish
+                is_news_bearish = sentiment_score <= -3
+                
+                # Check for confluence: 4H Trend Bearish AND AI Sentiment Bearish
+                if is_4h_bearish and is_news_bearish:
+                    log_event("WARNING", "WORKER", f"⚠️ Bearish confluence exit met for {asset}! 4H trend is bearish and AI sentiment is bearish ({sentiment_score}). Executing sell...")
+                else:
+                    log_event("INFO", "WORKER", f"Confluence exit NOT met for {asset}. Ignoring 1H crossover sell. Letting position ride (SL/TP/Trailing active). 4H Trend Bearish: {is_4h_bearish}, AI Bearish: {is_news_bearish}")
                     _last_analyzed_timestamps[asset] = completed_timestamp
                     continue
                 
-                # Confirm paper sell execution (liquidate full asset holdings)
                 amount_to_sell = asset_balance
                 trade_value = amount_to_sell * current_price
                 fee_pct = float(get_config("fee_pct", "0.001"))
                 trade_net_value = trade_value * (1 - fee_pct)
                 
-                # Update portfolio memory
                 portfolio["USD"]["balance"] = usd_balance + trade_net_value
                 portfolio[asset_ticker] = {
                     "balance": 0.0,
@@ -636,7 +688,7 @@ def _execute_cycle_logic(force=False):
                 update_portfolio(portfolio)
                 
                 if active_pos:
-                    pnl_pct = close_active_position(asset, current_price, "AI_HYBRID", f"Bearish crossover executed. AI sentiment: {sentiment_score} (Reason: {ai_reason})")
+                    pnl_pct = close_active_position(asset, current_price, "AI_HYBRID", f"Confluence Exit. 4H Trend Bearish: {is_4h_bearish}, AI Sentiment: {sentiment_score}")
                     log_event("SUCCESS", "WORKER", f"💰 PAPER SELL (POSITION CLOSED): Sold {amount_to_sell:.4f} {asset_ticker} at ${current_price:.2f} (Net: ${trade_net_value:.2f}, PnL: {pnl_pct:+.2f}%)")
                 else:
                     record_trade(
@@ -646,7 +698,7 @@ def _execute_cycle_logic(force=False):
                         amount=amount_to_sell,
                         trade_type="AI_HYBRID",
                         sentiment_score=sentiment_score,
-                        reason=f"Technical: {trigger_reason} | AI sentiment: {sentiment_score} (Reason: {ai_reason})",
+                        reason=f"Technical: {trigger_reason} | AI sentiment: {sentiment_score}",
                         is_active=0
                     )
                     log_event("SUCCESS", "WORKER", f"💰 PAPER SELL EXECUTED: Sold {amount_to_sell:.4f} {asset_ticker} at ${current_price:.2f} (Net: ${trade_net_value:.2f})")
@@ -654,13 +706,13 @@ def _execute_cycle_logic(force=False):
                 portfolio = get_portfolio()
                 total_nav = calculate_total_nav(portfolio)
             
-            # Set this completed candle timestamp to analyzed
+            # Set completed candle timestamp to analyzed
             _last_analyzed_timestamps[asset] = completed_timestamp
             
     log_event("INFO", "WORKER", "Algorithmic market analysis tick complete.")
 
 def pd_isna(val):
-    """Helper to safely check for pandas nan without importing pandas inside db/schema checks."""
+    """Helper to safely check for pandas nan."""
     try:
         if val is None:
             return True
@@ -672,16 +724,20 @@ def pd_isna(val):
 
 def run_sltp_guardian():
     """
-    Fast SL/TP guardian loop. Checks real-time prices against
-    stop-loss and take-profit levels for ALL active positions.
-    This runs much more frequently than the full analysis cycle
-    to protect positions during flash crashes.
+    Fast SL/TP and Trailing Stop Loss guardian loop.
+    Checks real-time prices and updates trailing stop-loss values dynamically if in profit.
     """
+    # Verify bot active status
+    bot_running = get_config("bot_running", "false") == "true"
+    if not bot_running:
+        return
+
     active_positions = get_all_active_positions()
     if not active_positions:
         return
     
     fee_pct = float(get_config("fee_pct", "0.001"))
+    trailing_pct = float(get_config("trailing_stop_loss_pct", "2.0"))
     
     for pos in active_positions:
         asset = pos['asset']
@@ -700,11 +756,36 @@ def run_sltp_guardian():
         
         asset_ticker = asset.split("/")[0]
         
+        # ---------------- TRAILING STOP LOSS UPDATE ----------------
+        if current_price > buy_price:
+            # Trailing target stop level: current_price - trailing_pct%
+            target_sl = current_price * (1 - trailing_pct / 100.0)
+            if sl_val is None or target_sl > sl_val:
+                # Update stop loss in DB
+                try:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE trades SET stop_loss = ? WHERE id = ?", (target_sl, pos['id']))
+                    conn.commit()
+                    conn.close()
+                    
+                    log_event("SUCCESS", "SL_TP_GUARD", f"📈 Trailing Stop Loss updated for {asset}: ${sl_val:.2f} -> ${target_sl:.2f} (Locked profit at current price ${current_price:.2f})")
+                    sl_val = target_sl # Use updated stop loss for subsequent check below
+                    
+                    # Notify user via Telegram
+                    try:
+                        from core.telegram_bot import send_telegram_message
+                        send_telegram_message(f"🛡️ *Takip Eden Stop Güncellendi (Trailing SL)*\n• *Varlık:* `{asset}`\n• *Eski Stop:* `${pos.get('stop_loss'):,.2f}`\n• *Yeni Stop:* `${target_sl:,.2f}`\n• *Anlık Fiyat:* `${current_price:,.2f}`")
+                    except Exception:
+                        pass
+                except Exception as e:
+                    log_event("ERROR", "SL_TP_GUARD", f"Failed to update trailing stop loss: {e}")
+        
         # Check Stop-Loss
         if sl_val and current_price <= sl_val:
             log_event("WARNING", "SL_TP_GUARD", f"🚨 STOP LOSS BREACHED! Real-time ${current_price:.2f} <= SL ${sl_val:.2f} for {asset}")
             
-            portfolio = get_portfolio()  # Fresh read
+            portfolio = get_portfolio()
             asset_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
             trade_value = asset_balance * current_price
             trade_net_value = trade_value * (1 - fee_pct)
@@ -720,7 +801,7 @@ def run_sltp_guardian():
         elif tp_val and current_price >= tp_val:
             log_event("SUCCESS", "SL_TP_GUARD", f"🎯 TAKE PROFIT BREACHED! Real-time ${current_price:.2f} >= TP ${tp_val:.2f} for {asset}")
             
-            portfolio = get_portfolio()  # Fresh read
+            portfolio = get_portfolio()
             asset_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
             trade_value = asset_balance * current_price
             trade_net_value = trade_value * (1 - fee_pct)
@@ -737,17 +818,23 @@ def run_analysis_scheduler_loop():
     Background loop that runs the market analysis cycle at the configured interval.
     """
     log_event("INFO", "WORKER", "Analysis scheduler thread started.")
-    last_analysis_time = 0  # Force run first cycle on startup
+    last_analysis_time = 0
     
     while True:
         try:
-            # Check VPN status first
-            vpn_status = get_config("vpn_status", "disconnected")
-            if vpn_status != "connected":
-                time.sleep(15)
+            bot_running = get_config("bot_running", "false") == "true"
+            if not bot_running:
+                time.sleep(10)
                 continue
                 
-            # Fetch current analysis interval dynamically from DB or env
+            # Verify VPN status if enabled
+            vpn_check_enabled = get_config("vpn_check_enabled", "false") == "true"
+            if vpn_check_enabled:
+                vpn_status = get_config("vpn_status", "disconnected")
+                if vpn_status != "connected":
+                    time.sleep(15)
+                    continue
+                
             try:
                 analysis_interval = int(get_config("simulation_interval_seconds") or os.getenv("SIMULATION_INTERVAL_SECONDS", "300"))
             except Exception:
@@ -763,7 +850,7 @@ def run_analysis_scheduler_loop():
                     log_event("ERROR", "WORKER", f"Error executing analysis cycle: {cycle_err}")
                 last_analysis_time = time.time()
                 
-            time.sleep(10)  # Check every 10s if it's time to run
+            time.sleep(10)
         except Exception as e:
             log_event("ERROR", "WORKER", f"Error in analysis scheduler loop: {e}")
             time.sleep(10)
@@ -771,63 +858,71 @@ def run_analysis_scheduler_loop():
 def main():
     """Main worker initialization and execution loop with dual-speed architecture."""
     print("====================================================")
-    print("       SENTIX ALGORITHMIC TRADING BG WORKER         ")
+    print("       SENTIX STOCK TRADING BACKGROUND WORKER       ")
     print("    Dual-Loop: SL/TP Guardian (30s) + Analysis (300s)")
     print("====================================================")
     
-    # Initialize the database
+    # Initialize database
     init_db()
     
-    # Save default configurations if not existing in SQLite
+    # Load default stock configurations
+    default_stock_watchlist = "AAPL/USD,MSFT/USD,NVDA/USD,AMD/USD,ARM/USD,TSM/USD,AVGO/USD,ASML/USD,AMZN/USD,GOOGL/USD,META/USD,TSLA/USD,QQQ/USD,SPY/USD"
     if not get_config("selected_assets"):
-        save_config("selected_assets", os.getenv("SELECTED_ASSETS", "BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,ADA/USDT,XRP/USDT,DOT/USDT,AVAX/USDT,LINK/USDT,NEAR/USDT,MATIC/USDT"))
+        save_config("selected_assets", default_stock_watchlist)
     if not get_config("min_ai_sentiment_threshold"):
-        save_config("min_ai_sentiment_threshold", os.getenv("MIN_AI_SENTIMENT_THRESHOLD", "3"))
+        save_config("min_ai_sentiment_threshold", "3")
     if not get_config("summarizer_model"):
-        save_config("summarizer_model", os.getenv("SUMMARIZER_MODEL", "gemini-3.1-flash-lite"))
+        save_config("summarizer_model", "gemini-3.1-flash-lite")
     if not get_config("sentiment_model"):
-        save_config("sentiment_model", os.getenv("SENTIMENT_MODEL", "gemini-3.5-flash"))
+        save_config("sentiment_model", "gemini-3.5-flash")
     if not get_config("gemini_api_key"):
         save_config("gemini_api_key", os.getenv("GEMINI_API_KEY", ""))
     if not get_config("risk_percentage"):
         save_config("risk_percentage", "2.0")
     if not get_config("stop_loss_pct"):
-        save_config("stop_loss_pct", "3.0")
+        save_config("stop_loss_pct", "2.0")  # Tighter default for stocks
     if not get_config("take_profit_pct"):
-        save_config("take_profit_pct", "6.0")
+        save_config("take_profit_pct", "5.0")  # Tighter default for stocks
+    if not get_config("trailing_stop_loss_pct"):
+        save_config("trailing_stop_loss_pct", "2.0")
+    if not get_config("vpn_check_enabled"):
+        save_config("vpn_check_enabled", "false")
+    if not get_config("bot_running"):
+        save_config("bot_running", "false")
     if not get_config("fee_pct"):
-        save_config("fee_pct", "0.001")
+        save_config("fee_pct", "0.0005") # Stock transaction fees are typically lower
     if not get_config("news_freshness_hours"):
         save_config("news_freshness_hours", "24")
     if not get_config("live_mode"):
         save_config("live_mode", os.getenv("LIVE_MODE", "false"))
 
-    log_event("INFO", "WORKER", "Background worker initialized with dual-loop architecture.")
+    log_event("INFO", "WORKER", "Background worker initialized.")
     
-    # Configurable intervals
-    guardian_interval = int(os.getenv("GUARDIAN_INTERVAL_SECONDS", "30"))      # SL/TP check every 30 seconds
-    
+    guardian_interval = int(os.getenv("GUARDIAN_INTERVAL_SECONDS", "30"))
     log_event("INFO", "WORKER", f"SL/TP Guardian interval: {guardian_interval}s")
     
-    # Fast first tick
     try:
         save_config("worker_heartbeat", datetime.now(timezone.utc).isoformat())
     except Exception:
         pass
     
-    from core.data_fetcher import check_vpn_connection
-    while not check_vpn_connection():
-        log_event("WARNING", "WORKER", "⚠️ VPN connection is down on startup! Pausing all operations. Retrying VPN check in 15 seconds...")
-        save_config("vpn_status", "disconnected")
-        time.sleep(15)
-        
-    save_config("vpn_status", "connected")
+    # Initialize VPN check only if enabled
+    vpn_check_enabled = get_config("vpn_check_enabled", "false") == "true"
+    if vpn_check_enabled:
+        from core.data_fetcher import check_vpn_connection
+        while not check_vpn_connection():
+            log_event("WARNING", "WORKER", "⚠️ VPN connection is down on startup! Retrying VPN check in 15 seconds...")
+            save_config("vpn_status", "disconnected")
+            time.sleep(15)
+        save_config("vpn_status", "connected")
+    else:
+        save_config("vpn_status", "connected")
     
     # Start Telegram Bot listener thread
     try:
         from core.telegram_bot import start_telegram_bot, send_telegram_message
         start_telegram_bot()
-        send_telegram_message("🟢 *Sentix Algoritmik Trading Botu başarıyla başlatıldı!* Sunucu aktif.")
+        send_telegram_message("🟢 *Sentix Hisse Senedi Algoritmik Trading Botu başarıyla başlatıldı!* Sunucu aktif.")
     except Exception as tg_err:
         log_event("ERROR", "WORKER", f"Could not start Telegram Bot listener: {tg_err}")
         
@@ -839,59 +934,60 @@ def main():
     except Exception as sched_err:
         log_event("ERROR", "WORKER", f"Could not start Analysis Scheduler thread: {sched_err}")
     
-    # Main thread continuous loop (SL/TP Guardian & VPN checks only)
+    # Main thread loop (Guardian SL/TP and idle manager)
     last_vpn_check_time = time.time()
     vpn_connected = True
     
     while True:
         try:
-            # Update heartbeat to notify UI worker is alive
             try:
                 save_config("worker_heartbeat", datetime.now(timezone.utc).isoformat())
             except Exception:
                 pass
                 
-            # Determine if we should check VPN
-            now = time.time()
+            bot_running = get_config("bot_running", "false") == "true"
+            if not bot_running:
+                time.sleep(5)
+                continue
             
-            # Check VPN if disconnected, or if 5 minutes elapsed
-            should_check_vpn = (not vpn_connected) or (now - last_vpn_check_time >= 300)
-            
-            if should_check_vpn:
-                current_vpn_state = check_vpn_connection()
-                last_vpn_check_time = now
+            vpn_check_enabled = get_config("vpn_check_enabled", "false") == "true"
+            if vpn_check_enabled:
+                now = time.time()
+                should_check_vpn = (not vpn_connected) or (now - last_vpn_check_time >= 300)
                 
-                # Alert on VPN state change
-                if current_vpn_state != vpn_connected:
-                    try:
-                        from core.telegram_bot import send_telegram_message, get_vpn_logs
-                        if current_vpn_state:
-                            send_telegram_message("🔒 *VPN Bağlantısı Yeniden Sağlandı!* İşlemler ve koruma guardian'ı devam ediyor.")
-                        else:
-                            logs = get_vpn_logs(tail=5)
-                            alert_msg = (
-                                "🚨 *VPN Bağlantısı Koptu!*\n"
-                                "Tüm trading ve pozisyon koruma işlemleri duraklatıldı.\n\n"
-                                "*Son VPN Günlükleri (Hata Analizi):*\n"
-                                f"```\n{logs}\n```"
-                            )
-                            send_telegram_message(alert_msg)
-                    except Exception as tg_alert_err:
-                        log_event("WARNING", "WORKER", f"Could not send VPN state change notification: {tg_alert_err}")
-                
-                vpn_connected = current_vpn_state
-                
-                if not vpn_connected:
-                    log_event("WARNING", "WORKER", "⚠️ VPN connection is down! Pausing all trading operations and SL/TP guardian checks. Retrying VPN check in 15 seconds...")
-                    save_config("vpn_status", "disconnected")
-                    time.sleep(15)
-                    continue
+                if should_check_vpn:
+                    from core.data_fetcher import check_vpn_connection
+                    current_vpn_state = check_vpn_connection()
+                    last_vpn_check_time = now
                     
-                save_config("vpn_status", "connected")
+                    if current_vpn_state != vpn_connected:
+                        try:
+                            from core.telegram_bot import send_telegram_message, get_vpn_logs
+                            if current_vpn_state:
+                                send_telegram_message("🔒 *VPN Bağlantısı Yeniden Sağlandı!* Pozisyon koruma guardian'ı devam ediyor.")
+                            else:
+                                logs = get_vpn_logs(tail=5)
+                                alert_msg = (
+                                    "🚨 *VPN Bağlantısı Koptu!*\n"
+                                    "Tüm trading işlemleri ve SL/TP koruyucuları durduruldu.\n\n"
+                                    "*VPN Logları:*\n"
+                                    f"```\n{logs}\n```"
+                                )
+                                send_telegram_message(alert_msg)
+                        except Exception:
+                            pass
+                    
+                    vpn_connected = current_vpn_state
+                    
+                    if not vpn_connected:
+                        log_event("WARNING", "WORKER", "⚠️ VPN down. Pausing all operations. Retrying in 15 seconds...")
+                        save_config("vpn_status", "disconnected")
+                        time.sleep(15)
+                        continue
+                        
+                    save_config("vpn_status", "connected")
             
-            # Always run fast SL/TP guardian check
             run_sltp_guardian()
-            
             time.sleep(guardian_interval)
             
         except KeyboardInterrupt:
@@ -899,9 +995,7 @@ def main():
             break
         except Exception as e:
             log_event("ERROR", "WORKER", f"Unhandled error in main loop: {e}")
-            import traceback
-            traceback.print_exc()
-            time.sleep(guardian_interval)  # Wait and retry
+            time.sleep(guardian_interval)
 
 if __name__ == "__main__":
     main()
