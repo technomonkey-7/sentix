@@ -54,7 +54,7 @@ def fetch_ohlcv(symbol="AAPL/USD", timeframe="1h", limit=100):
             # If 4h timeframe is requested, resample 1h data to 4h
             if timeframe == "4h":
                 df.set_index('timestamp', inplace=True)
-                df_resampled = df.resample('4H').agg({
+                df_resampled = df.resample('4h').agg({
                     'open': 'first',
                     'high': 'max',
                     'low': 'min',
