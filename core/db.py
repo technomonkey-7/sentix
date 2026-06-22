@@ -123,7 +123,7 @@ def init_db():
 
 def log_event(level, module, message):
     """Logs an event into the SQLite logs table and prints it to stdout."""
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now().astimezone().isoformat()
     try:
         print(f"[{timestamp}] [{level}] [{module}] {message}", flush=True)
     except UnicodeEncodeError:

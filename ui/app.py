@@ -27,8 +27,9 @@ from ai.sentiment_analyzer import analyze_sentiment
 # Load env configurations
 load_dotenv()
 
-from datetime import timezone, timedelta
-ISTANBUL_TZ = timezone(timedelta(hours=3))
+from datetime import timezone
+# Automatically resolve system local timezone (e.g. Europe/Amsterdam or server TZ)
+ISTANBUL_TZ = datetime.now().astimezone().tzinfo
 
 # Bilingual Translations Dictionary
 T = {
@@ -343,9 +344,9 @@ def get_news_relative_time(pub_date_str):
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=tz.utc)
             
-        # Localize to Europe/Istanbul (UTC+3)
-        istanbul_tz = tz(timedelta(hours=3))
-        local_dt = dt.astimezone(istanbul_tz)
+        # Localize to local system timezone (configured by TZ in Docker)
+        local_tz = datetime.now().astimezone().tzinfo
+        local_dt = dt.astimezone(local_tz)
         local_time_str = local_dt.strftime("%H:%M")
         
         now_utc = datetime.now(tz.utc)
