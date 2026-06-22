@@ -888,7 +888,7 @@ def main():
     if not get_config("vpn_check_enabled"):
         save_config("vpn_check_enabled", "false")
     if not get_config("bot_running"):
-        save_config("bot_running", "false")
+        save_config("bot_running", "true")
     if not get_config("fee_pct"):
         save_config("fee_pct", "0.0005") # Stock transaction fees are typically lower
     if not get_config("news_freshness_hours"):

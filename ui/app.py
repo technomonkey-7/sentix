@@ -1354,7 +1354,7 @@ st.sidebar.markdown(f"### {t('auto_refresh')}")
 
 # Initialize session state for auto-refresh if not set
 if "auto_refresh_enabled" not in st.session_state:
-    st.session_state["auto_refresh_enabled"] = False
+    st.session_state["auto_refresh_enabled"] = True
 if "auto_refresh_interval" not in st.session_state:
     st.session_state["auto_refresh_interval"] = 30
 
