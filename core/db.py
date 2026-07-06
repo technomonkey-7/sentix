@@ -1,6 +1,5 @@
 import sqlite3
 import os
-import json
 from datetime import datetime, timezone
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data.db")
@@ -156,8 +155,32 @@ def init_db():
     if not cursor.fetchone():
         cursor.execute("INSERT INTO portfolio (asset, balance, avg_entry_price) VALUES ('USD', 10000.0, 0.0)")
 
+    _migrate_legacy_symbols(cursor)
+
     conn.commit()
     conn.close()
+
+def _migrate_legacy_symbols(cursor):
+    """One-time v1→v2 migration: 'AAPL/USD' style assets become plain
+    yfinance tickers ('AAPL', crypto 'BTC-USD'). Stale v1 candles are
+    dropped (they refetch on the next cycle)."""
+    from core.config import normalize_symbol
+
+    cursor.execute("SELECT DISTINCT asset FROM trades WHERE asset LIKE '%/%'")
+    legacy = [row[0] for row in cursor.fetchall()]
+    for old in legacy:
+        new = normalize_symbol(old)
+        cursor.execute("UPDATE trades SET asset = ? WHERE asset = ?", (new, old))
+        cursor.execute("UPDATE ai_runs SET asset = ? WHERE asset = ?", (new, old))
+
+    cursor.execute("DELETE FROM candles WHERE asset LIKE '%/%'")
+
+    # v1 portfolio rows already used base tickers; only crypto needs the -USD form
+    cursor.execute("SELECT asset FROM portfolio WHERE asset NOT IN ('USD')")
+    for (asset,) in cursor.fetchall():
+        new = normalize_symbol(asset)
+        if new != asset:
+            cursor.execute("UPDATE OR REPLACE portfolio SET asset = ? WHERE asset = ?", (new, asset))
 
 # ----------------- DB Operations Helpers -----------------
 
