@@ -1,7 +1,6 @@
-ccxt>=4.1.0
-pandas>=2.0.0
-pandas-ta
-streamlit>=1.30.0
+pandas>=2.2.0
+numpy>=1.26.0
+streamlit>=1.40.0
 plotly>=5.18.0
 google-genai>=1.0.0
 python-dotenv>=1.0.0
@@ -10,4 +9,4 @@ fastapi>=0.109.0
 uvicorn>=0.27.0
 pydantic>=2.5.3
 streamlit-autorefresh
-yfinance>=0.2.38
+yfinance>=0.2.50

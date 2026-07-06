@@ -197,7 +197,7 @@ def process_command(text: str):
             "⏸️ `/pause` - Otomatik alım-satım döngüsünü duraklatır (durdurur)\n"
             "▶️ `/resume` - Otomatik alım-satım döngüsünü başlatır\n"
             "⚙️ `/risk` `yüzde` - NAV işlem büyüklüğü yüzdesini ayarlar (örn: `/risk 2.5`)\n"
-            "🛡️ `/sltp` `sl` `tp` - Stop-Loss ve Take-Profit oranlarını günceller (örn: `/sltp 2.0 5.0`)"
+            "🛡️ `/sltp` `atr` `rr` - ATR stop çarpanı ve Risk/Ödül oranını günceller (örn: `/sltp 2.5 2.0`)"
         )
         send_telegram_message(msg)
         
@@ -449,39 +449,42 @@ def process_command(text: str):
         
     elif cmd == "/risk":
         if len(cmd_parts) < 2:
-            send_telegram_message("⚠️ *Lütfen bir risk yüzdesi belirtin.* Örn: `/risk 2.5`")
+            send_telegram_message("⚠️ *Lütfen işlem başına risk yüzdesi belirtin.* Örn: `/risk 1.0`\n"
+                                  "_Bu, stop-loss vurulursa NAV'ın kaybedilecek yüzdesidir._")
             return
         try:
             val = float(cmd_parts[1])
-            if not (1.0 <= val <= 5.0):
-                send_telegram_message("⚠️ *Risk yüzdesi 1.0 ile 5.0 arasında olmalıdır.*")
+            if not (0.25 <= val <= 3.0):
+                send_telegram_message("⚠️ *İşlem başına risk %0.25 ile %3.0 arasında olmalıdır.*")
                 return
-            save_config("risk_percentage", val)
-            log_event("SUCCESS", "TELEGRAM", f"NAV risk percentage updated to {val}% via Telegram command.")
-            send_telegram_message(f"⚙️ *İşlem Risk Büyüklüğü (Risk %) güncellendi:* {val}% of NAV")
+            save_config("risk_per_trade_pct", val)
+            save_config("risk_percentage", val)  # legacy alias
+            log_event("SUCCESS", "TELEGRAM", f"Risk per trade updated to {val}% via Telegram command.")
+            send_telegram_message(f"⚙️ *İşlem başına risk güncellendi:* NAV'ın %{val}'i (stop mesafesine göre boyutlandırılır)")
         except ValueError:
             send_telegram_message("⚠️ *Geçersiz yüzde biçimi. Lütfen sayısal bir değer girin.*")
-            
+
     elif cmd == "/sltp":
         if len(cmd_parts) < 2:
-            send_telegram_message("⚠️ *Lütfen Stop-Loss ve Take-Profit oranlarını belirtin.* Örn: `/sltp 3.0 6.0`")
+            send_telegram_message("⚠️ *Lütfen ATR stop çarpanı ve Risk/Ödül oranını belirtin.* Örn: `/sltp 2.5 2.0`\n"
+                                  "_v2'de stoplar sabit yüzde değil, volatiliteye (ATR) göre hesaplanır._")
             return
         try:
             sub_parts = cmd_parts[1].split()
             if len(sub_parts) != 2:
-                send_telegram_message("⚠️ *Lütfen hem SL hem TP oranlarını girin.* Örn: `/sltp 3.0 6.0`")
+                send_telegram_message("⚠️ *İki değer girin:* ATR çarpanı ve R/R oranı. Örn: `/sltp 2.5 2.0`")
                 return
-            sl_val = float(sub_parts[0])
-            tp_val = float(sub_parts[1])
-            
-            if not (1.0 <= sl_val <= 10.0) or not (2.0 <= tp_val <= 20.0):
-                send_telegram_message("⚠️ *SL oranı %1.0-%10.0, TP oranı %2.0-%20.0 arasında olmalıdır.*")
+            atr_mult = float(sub_parts[0])
+            rr = float(sub_parts[1])
+
+            if not (1.0 <= atr_mult <= 5.0) or not (1.0 <= rr <= 4.0):
+                send_telegram_message("⚠️ *ATR çarpanı 1.0-5.0, R/R oranı 1.0-4.0 arasında olmalıdır.*")
                 return
-                
-            save_config("stop_loss_pct", sl_val)
-            save_config("take_profit_pct", tp_val)
-            log_event("SUCCESS", "TELEGRAM", f"SL/TP percentages updated to {sl_val}% / {tp_val}% via Telegram command.")
-            send_telegram_message(f"🛡️ *Pozisyon Koruma Limitleri güncellendi:*\n• *Stop-Loss:* `{sl_val}%`\n• *Take-Profit:* `{tp_val}%`")
+
+            save_config("atr_mult_sl", atr_mult)
+            save_config("rr_ratio", rr)
+            log_event("SUCCESS", "TELEGRAM", f"ATR stop mult {atr_mult} / RR ratio {rr} updated via Telegram.")
+            send_telegram_message(f"🛡️ *Stop/Hedef ayarları güncellendi:*\n• *Stop mesafesi:* `{atr_mult} × ATR(14)`\n• *Kâr hedefi:* `{rr}R`")
         except ValueError:
             send_telegram_message("⚠️ *Geçersiz oran biçimi. Lütfen sayısal değerler girin.*")
             

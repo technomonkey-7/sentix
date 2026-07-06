@@ -65,11 +65,51 @@ def init_db():
         "stop_loss": "REAL",
         "take_profit": "REAL",
         "pnl": "REAL",
-        "is_active": "INTEGER DEFAULT 0"
+        "is_active": "INTEGER DEFAULT 0",
+        # v2 columns: fee-aware accounting and ATR trailing state
+        "fees": "REAL DEFAULT 0.0",
+        "pnl_usd": "REAL",
+        "high_watermark": "REAL",
+        "trail_dist": "REAL",
+        "entry_atr": "REAL",
+        "r_multiple": "REAL",
+        "confluence_score": "INTEGER"
     }
     for col_name, col_def in migration_cols.items():
         if col_name not in existing_cols:
             cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_def}")
+
+    # Equity history (NAV snapshots for the equity curve)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS equity_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT,
+        nav REAL,
+        cash REAL
+    )
+    """)
+
+    # Per-symbol re-entry cooldowns (set after stop-loss exits)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS cooldowns (
+        asset TEXT PRIMARY KEY,
+        until TEXT,
+        reason TEXT
+    )
+    """)
+
+    # Signal scanner audit: what the strategy saw for each symbol each cycle
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS signals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT,
+        asset TEXT,
+        decision TEXT,       -- ENTER / SKIP / EXIT / HOLD
+        score INTEGER,
+        price REAL,
+        details TEXT         -- JSON: gate-by-gate outcomes
+    )
+    """)
 
     # Portfolio Table
     cursor.execute("""
@@ -382,6 +422,106 @@ def save_config(key, value):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, str(value)))
+    conn.commit()
+    conn.close()
+
+# ----------------- v2 Helpers: equity curve, cooldowns, signals -----------------
+
+def record_equity_snapshot(nav, cash, min_gap_seconds=240):
+    """Appends a NAV snapshot unless the last one is younger than min_gap_seconds."""
+    now = datetime.now(timezone.utc)
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT timestamp FROM equity_history ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        if row:
+            try:
+                last = datetime.fromisoformat(row["timestamp"])
+                if (now - last).total_seconds() < min_gap_seconds:
+                    return
+            except Exception:
+                pass
+        cursor.execute(
+            "INSERT INTO equity_history (timestamp, nav, cash) VALUES (?, ?, ?)",
+            (now.isoformat(), float(nav), float(cash))
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_equity_history(limit=5000):
+    """Returns NAV snapshots in chronological order."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT timestamp, nav, cash FROM equity_history ORDER BY id DESC LIMIT ?", (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in reversed(rows)]
+
+def set_cooldown(asset, until_iso, reason=""):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO cooldowns (asset, until, reason) VALUES (?, ?, ?)",
+                   (asset, until_iso, reason))
+    conn.commit()
+    conn.close()
+
+def get_cooldown(asset):
+    """Returns the cooldown expiry datetime for an asset, or None if not cooling down."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT until FROM cooldowns WHERE asset = ?", (asset,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row or not row["until"]:
+        return None
+    try:
+        until = datetime.fromisoformat(row["until"])
+        if until > datetime.now(timezone.utc):
+            return until
+    except Exception:
+        pass
+    return None
+
+def save_signal(asset, decision, score, price, details_json):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO signals (timestamp, asset, decision, score, price, details) VALUES (?, ?, ?, ?, ?, ?)",
+        (datetime.now(timezone.utc).isoformat(), asset, decision, score, price, details_json)
+    )
+    # Bound growth: keep the latest 2000 scanner rows
+    cursor.execute("DELETE FROM signals WHERE id NOT IN (SELECT id FROM signals ORDER BY id DESC LIMIT 2000)")
+    conn.commit()
+    conn.close()
+
+def get_latest_signals():
+    """Latest scanner row per asset."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT s.* FROM signals s
+        INNER JOIN (SELECT asset, MAX(id) AS max_id FROM signals GROUP BY asset) m
+        ON s.asset = m.asset AND s.id = m.max_id
+        ORDER BY s.asset
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def update_trade_fields(trade_id, **fields):
+    """Updates arbitrary columns on a trade row (used for trailing-stop state)."""
+    if not fields:
+        return
+    allowed = {"stop_loss", "take_profit", "high_watermark", "trail_dist", "pnl", "pnl_usd", "is_active", "r_multiple"}
+    cols = [k for k in fields if k in allowed]
+    if not cols:
+        return
+    conn = get_connection()
+    cursor = conn.cursor()
+    assignments = ", ".join(f"{c} = ?" for c in cols)
+    cursor.execute(f"UPDATE trades SET {assignments} WHERE id = ?", [fields[c] for c in cols] + [trade_id])
     conn.commit()
     conn.close()
 

@@ -1,1001 +1,489 @@
-import time
-import os
-import math
-import yfinance as yf
-from datetime import datetime, timezone, timedelta
-from dotenv import load_dotenv
-from core.db import (
-    init_db, log_event, save_candles, get_portfolio, 
-    update_portfolio, record_trade, get_config, save_config,
-    get_active_position, get_all_active_positions, close_active_position,
-    get_connection
-)
-from core.data_fetcher import fetch_ohlcv, fetch_asset_news
-from core.math_engine import calculate_indicators, check_triggers, calculate_support_resistance, check_candlestick_patterns
+"""Sentix v2 background worker.
 
-# Load environment configurations
+Dual-loop architecture:
+- Analysis loop (default 300s): evaluates the strategy on completed candles,
+  handles entries and structural exits.
+- Guardian loop (default 60s): real-time stop-loss / take-profit / trailing
+  stop protection for open positions.
+
+All trading logic lives in core.strategy / core.risk / core.accounting —
+this file only orchestrates.
+"""
+import json
+import os
+import threading
+import time
+from datetime import datetime, timezone, timedelta
+
+from dotenv import load_dotenv
+
+from core.db import (
+    init_db, log_event, save_candles, get_config, save_config,
+    get_active_position, get_all_active_positions, get_cooldown,
+    record_equity_snapshot, save_signal, update_trade_fields,
+)
+from core.config import StrategyConfig
+from core.data_fetcher import fetch_ohlcv, fetch_asset_news, fetch_realtime_price, resample_4h
+from core.indicators import add_indicators
+from core import strategy, risk as riskmod, accounting
+
 load_dotenv()
 
-_last_analyzed_timestamps = {}
-_last_ai_check_times = {}
+# In-process cache for slow-moving daily frames: {symbol: (fetched_at, df)}
+_daily_cache = {}
+_DAILY_TTL_SECONDS = 6 * 3600
 
-def fetch_realtime_price(symbol):
-    """
-    Fetches the current real-time price for a stock symbol using yfinance.
-    Falls back to the latest DB candle close price if the yfinance call fails.
-    This is critical for accurate SL/TP monitoring.
-    """
-    ticker_symbol = symbol.split('/')[0] if '/' in symbol else symbol
-    max_retries = 3
-    retry_delay = 1.0
-    
-    for attempt in range(max_retries):
-        try:
-            ticker = yf.Ticker(ticker_symbol)
-            price = float(ticker.fast_info['lastPrice'])
-            if price > 0:
-                return price
-        except Exception as e:
-            # Fallback to history 1-minute candle
-            try:
-                ticker = yf.Ticker(ticker_symbol)
-                df_history = ticker.history(period="1d", interval="1m")
-                if not df_history.empty:
-                    price = float(df_history['Close'].iloc[-1])
-                    return price
-            except Exception:
-                pass
-            
-            log_event("WARNING", "WORKER", f"Attempt {attempt+1} failed to fetch real-time price for {symbol}: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            else:
-                live_mode = (get_config("live_mode") or os.getenv("LIVE_MODE", "false")).lower() == "true"
-                if live_mode:
-                    log_event("WARNING", "WORKER", f"Real-time price fetch failed for {symbol} in LIVE MODE. Refusing database price fallback.")
-                    return None
 
-                log_event("WARNING", "WORKER", f"Real-time price fetch failed for {symbol} after {max_retries} attempts. Falling back to DB candle price.")
-                # Fallback to latest DB candle close
-                try:
-                    conn = get_connection()
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT close FROM candles WHERE asset = ? ORDER BY timestamp DESC LIMIT 1", (symbol,))
-                    row = cursor.fetchone()
-                    conn.close()
-                    if row:
-                        return float(row[0])
-                except Exception:
-                    pass
-                return None
+def calculate_total_nav(portfolio=None):
+    """Compatibility wrapper used by the Telegram bot and UI."""
+    nav, _, _ = accounting.calculate_nav()
+    return nav
 
-def calculate_total_nav(portfolio):
-    """
-    Calculates the Net Asset Value (NAV) of the portfolio.
-    USD balance + value of all stock holdings using current market prices.
-    """
-    total_nav = portfolio.get("USD", {}).get("balance", 0.0)
-    for asset_ticker, data in portfolio.items():
-        if asset_ticker == "USD":
-            continue
-        balance = data.get("balance", 0.0)
-        avg_entry = data.get("avg_entry_price", 0.0)
-        if balance > 0:
-            current_price = avg_entry
-            try:
-                conn = get_connection()
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT close FROM candles 
-                    WHERE asset LIKE ? 
-                    ORDER BY timestamp DESC 
-                    LIMIT 1
-                """, (f"{asset_ticker}/%",))
-                row = cursor.fetchone()
-                if row:
-                    current_price = float(row[0])
-                conn.close()
-            except Exception:
-                pass
-            total_nav += balance * current_price
-    return total_nav
 
 def validate_api_key_for_start():
-    """
-    Checks if there is a Gemini API Key available.
-    """
+    """True when at least one Gemini API key is configured."""
     from ai.sentiment_analyzer import load_api_keys
-    keys = load_api_keys()
-    if keys:
+    if load_api_keys():
         return True
     key = get_config("gemini_api_key") or os.getenv("GEMINI_API_KEY")
-    if key and key.strip() != "":
-        return True
-    return False
+    return bool(key and key.strip())
+
+
+def _get_daily_frame(symbol):
+    """Daily candles with indicators, cached for 6h (they only change once a day)."""
+    now = time.time()
+    cached = _daily_cache.get(symbol)
+    if cached and now - cached[0] < _DAILY_TTL_SECONDS:
+        return cached[1]
+    df = fetch_ohlcv(symbol, "1d", limit=400)
+    if df is not None and not df.empty:
+        df = add_indicators(df)
+        _daily_cache[symbol] = (now, df)
+    return df
+
+
+def _persist_candles(symbol, df_1h):
+    candles = []
+    for _, row in df_1h.iterrows():
+        def _f(key):
+            val = row.get(key)
+            try:
+                import pandas as pd
+                return None if val is None or pd.isna(val) else float(val)
+            except (TypeError, ValueError):
+                return None
+        candles.append({
+            "timestamp": row["timestamp"].strftime("%Y-%m-%d %H:%M:%S"),
+            "asset": symbol, "interval": "1h",
+            "open": _f("open"), "high": _f("high"), "low": _f("low"),
+            "close": _f("close"), "volume": _f("volume"),
+            "rsi": _f("rsi"), "macd": _f("macd"), "macd_signal": _f("macd_signal"),
+            "macd_hist": _f("macd_hist"), "ema": _f("ema"),
+        })
+    save_candles(candles)
+
+
+def _load_analyzed():
+    try:
+        return json.loads(get_config("analyzed_candles") or "{}")
+    except (TypeError, ValueError):
+        return {}
+
+
+def _save_analyzed(analyzed):
+    try:
+        save_config("analyzed_candles", json.dumps(analyzed))
+    except Exception:
+        pass
+
 
 def run_worker_cycle(force=False):
-    """
-    Wrapper to acquire database lock and prevent multiple concurrent analysis cycles.
-    """
+    """Acquires the cycle lock and runs one analysis cycle."""
     lock_time_str = get_config("worker_lock_time")
     now_utc = datetime.now(timezone.utc)
     if lock_time_str:
         try:
             lock_time = datetime.fromisoformat(lock_time_str)
             if now_utc - lock_time < timedelta(minutes=3):
-                log_event("WARNING", "WORKER", "Another analysis cycle is already in progress. Skipping execution to prevent conflicts.")
+                log_event("WARNING", "WORKER", "Another analysis cycle is already running; skipping.")
                 if force:
-                    raise RuntimeError("Başka bir analiz döngüsü şu anda aktif olarak çalışıyor. Lütfen biraz bekleyin.")
+                    raise RuntimeError("Başka bir analiz döngüsü şu anda çalışıyor. Lütfen biraz bekleyin.")
                 return
         except RuntimeError:
             raise
         except Exception:
             pass
-            
-    try:
-        save_config("worker_lock_time", now_utc.isoformat())
-    except Exception:
-        pass
-        
+
+    save_config("worker_lock_time", now_utc.isoformat())
     try:
         _execute_cycle_logic(force=force)
     finally:
-        try:
-            save_config("worker_lock_time", "")
-        except Exception:
-            pass
+        save_config("worker_lock_time", "")
+
 
 def _execute_cycle_logic(force=False):
-    """
-    Executes a single cycle of the background worker:
-    1. Reads latest configurations.
-    2. Fetches prices and computes indicators for all active assets.
-    3. Runs real-time SL/TP monitor to liquidate open positions immediately when hit.
-    4. Runs deterministic technical analysis to check for crossover triggers.
-    5. Double-checks triggers with 4-hour timeframe trend, volume, support levels, and patterns.
-    6. Batches news scraping and structured Gemini API sentiment checks.
-    7. Handles paper trading buy/sell executions and state saves.
-    """
-    # Check if automatic bot is paused
     if not force and get_config("bot_running", "false") == "false":
-        log_event("WARNING", "WORKER", "Algorithmic market analysis tick skipped because automatic trading is Durduruldu (Idle).")
         return
 
-    log_event("INFO", "WORKER", "Starting algorithmic market analysis tick...")
-    
-    # Validate API key
-    if not validate_api_key_for_start():
-        log_event("ERROR", "WORKER", "Google Gemini API Key is missing. Disabling bot execution.")
-        save_config("bot_running", "false")
-        try:
-            from core.telegram_bot import send_telegram_message
-            send_telegram_message("❌ *Hata:* Google Gemini API anahtarı eksik olduğu için bot başlatılamadı.")
-        except Exception:
-            pass
-        return
+    cfg = StrategyConfig.from_db()
+    log_event("INFO", "WORKER", f"Analysis cycle started for {len(cfg.watchlist)} symbols.")
 
-    # 1. Fetch config settings
-    assets_str = get_config("selected_assets") or os.getenv("SELECTED_ASSETS", "AAPL/USD,MSFT/USD,NVDA/USD,AMD/USD,ARM/USD,TSM/USD,AVGO/USD,ASML/USD,AMZN/USD,GOOGL/USD,META/USD,TSLA/USD,QQQ/USD,SPY/USD")
-    active_assets = [a.strip() for a in assets_str.split(",") if a.strip()]
-    
-    sentiment_threshold = int(get_config("min_ai_sentiment_threshold") or os.getenv("MIN_AI_SENTIMENT_THRESHOLD", "3"))
-    
-    # Default risk settings
-    risk_pct = float(get_config("risk_percentage") or os.getenv("RISK_PERCENTAGE", "2.0"))
-    sl_pct = float(get_config("stop_loss_pct") or os.getenv("STOP_LOSS_PCT", "3.0"))
-    tp_pct = float(get_config("take_profit_pct") or os.getenv("TAKE_PROFIT_PCT", "6.0"))
-    
-    portfolio = get_portfolio()
-    total_nav = calculate_total_nav(portfolio)
-    
-    log_event("INFO", "WORKER", f"Total NAV: ${total_nav:.2f} | Risk Size: {risk_pct}% (${total_nav * (risk_pct/100.0):.2f})")
-    
-    candidates_to_analyze = []
-    
-    # Process each asset independently for technical crossover checking
-    for asset in active_assets:
+    nav, cash, exposure = accounting.calculate_nav()
+    record_equity_snapshot(nav, cash)
+    cb_active, cb_detail = accounting.check_circuit_breaker(nav, cfg)
+    if cb_active:
+        log_event("WARNING", "RISK", f"Circuit breaker: {cb_detail}")
+
+    ai_available = cfg.ai_enabled and validate_api_key_for_start()
+    if cfg.ai_enabled and not ai_available:
+        log_event("WARNING", "WORKER", "AI enabled but no Gemini key found — running technical-only.")
+
+    # Benchmark daily frames (SPY for equities, BTC-USD when crypto is watched)
+    benchmarks = {}
+    if cfg.market_filter_enabled:
+        benchmarks["equity"] = _get_daily_frame(cfg.benchmark_equity)
+        if any(riskmod.is_crypto(s) for s in cfg.watchlist):
+            benchmarks["crypto"] = _get_daily_frame(cfg.benchmark_crypto)
+
+    analyzed = _load_analyzed()
+    now_utc = datetime.now(timezone.utc)
+    candidates = []
+
+    for symbol in cfg.watchlist:
         try:
-            # Update heartbeat inside the loop so UI knows bot is alive
-            try:
-                save_config("worker_heartbeat", datetime.now(timezone.utc).isoformat())
-            except Exception:
-                pass
-                
-            log_event("INFO", "WORKER", f"Analyzing asset: {asset}")
-            
-            # Fetch 1h historical candle data
-            candles_df = fetch_ohlcv(symbol=asset, timeframe="1h", limit=100)
-            
-            if candles_df is None or candles_df.empty:
-                log_event("WARNING", "WORKER", f"No candles fetched for {asset}. Skipping.")
+            save_config("worker_heartbeat", datetime.now(timezone.utc).isoformat())
+
+            df_1h = fetch_ohlcv(symbol, "1h", limit=300)
+            if df_1h is None or len(df_1h) < 60:
+                log_event("WARNING", "WORKER", f"{symbol}: no/insufficient 1h data — skipping this cycle.")
                 continue
-                
-            # Compute indicators (RSI, EMA, MACD)
-            candles_df = calculate_indicators(candles_df)
-            
-            # Persist candles to database
-            candles_list = []
-            for _, row in candles_df.iterrows():
-                candles_list.append({
-                    "timestamp": row["timestamp"],
-                    "asset": asset,
-                    "interval": "1h",
-                    "open": row["open"],
-                    "high": row["high"],
-                    "low": row["low"],
-                    "close": row["close"],
-                    "volume": row["volume"],
-                    "rsi": row["rsi"] if not pd_isna(row["rsi"]) else None,
-                    "macd": row["macd"] if not pd_isna(row["macd"]) else None,
-                    "macd_signal": row["macd_signal"] if not pd_isna(row["macd_signal"]) else None,
-                    "macd_hist": row["macd_hist"] if not pd_isna(row["macd_hist"]) else None,
-                    "ema": row["ema"] if not pd_isna(row["ema"]) else None
-                })
-            
-            save_candles(candles_list)
-            
-            # Skip trading decisions on simulated data
-            is_simulated = False
-            if '_is_simulated' in candles_df.columns:
-                is_simulated = bool(candles_df['_is_simulated'].iloc[0])
-            if is_simulated:
-                log_event("WARNING", "WORKER", f"⚠️ {asset} is using SIMULATED data (YFinance offline fallback). Skipping trade decisions for safety.")
-                continue
-            
-            # Extract latest close price AND fetch real-time price
-            completed_candle = candles_df.iloc[-2]
-            candle_close_price = float(completed_candle["close"]) # For indicator analysis
-            completed_timestamp = completed_candle["timestamp"]
-            
-            # Use real-time ticker price for SL/TP monitoring
-            realtime_price = fetch_realtime_price(asset)
-            live_mode = (get_config("live_mode") or os.getenv("LIVE_MODE", "false")).lower() == "true"
-            if realtime_price is None:
-                if live_mode:
-                    log_event("WARNING", "WORKER", f"Skipping SL/TP check for {asset} in cycle because real-time price fetch failed.")
-                    current_price = None
+            df_1h = add_indicators(df_1h)
+            _persist_candles(symbol, df_1h)
+
+            completed = df_1h.iloc[-2]
+            completed_ts = completed["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+            last_ts = df_1h.iloc[-1]["timestamp"].to_pydatetime()
+
+            fresh = riskmod.data_is_fresh(symbol, last_ts, 60, now_utc)
+            market_open = riskmod.is_market_open(symbol, now_utc)
+
+            position = get_active_position(symbol)
+            df_daily = _get_daily_frame(symbol)
+
+            # ---------- Open position: structural exit checks ----------
+            if position:
+                exit_sig = strategy.evaluate_exit(position, df_daily, cfg, now_utc)
+                if exit_sig.should_exit and market_open and fresh:
+                    price = fetch_realtime_price(symbol) or float(completed["close"])
+                    result = accounting.execute_sell(symbol, price, cfg,
+                                                     trade_type=exit_sig.code, reason=exit_sig.detail)
+                    if result:
+                        log_event("SUCCESS", "WORKER",
+                                  f"📤 {symbol} closed ({exit_sig.code}): {exit_sig.detail} "
+                                  f"PnL {result['pnl_pct']:+.2f}%")
+                    save_signal(symbol, "EXIT", None, price, json.dumps(
+                        {"reason": exit_sig.detail, "code": exit_sig.code}))
                 else:
-                    current_price = candle_close_price
-            else:
-                current_price = realtime_price
-            
-            # Log technical values
-            rsi_val = completed_candle.get("rsi")
-            macd_val = completed_candle.get("macd")
-            sig_val = completed_candle.get("macd_signal")
-            ema_val = completed_candle.get("ema")
-            
-            if rsi_val is not None:
-                rsi_status = "Aşırı Satım (Boğa Fırsatı)" if rsi_val <= 30 else ("Aşırı Alım (Ayı Riski)" if rsi_val >= 70 else "Nötr Bölge")
-                log_event("INFO", "MATH", f"{asset} - RSI: {rsi_val:.2f} ({rsi_status})")
-            else:
-                log_event("INFO", "MATH", f"{asset} - RSI: Veri yetersiz")
-                
-            if macd_val is not None and sig_val is not None:
-                macd_diff = macd_val - sig_val
-                macd_status = "Pozitif Bölge (Yükseliş Trendi)" if macd_diff > 0 else "Negatif Bölge (Düşüş Trendi)"
-                log_event("INFO", "MATH", f"{asset} - MACD: {macd_val:.4f}, Sinyal: {sig_val:.4f} (Fark: {macd_diff:.4f} - {macd_status})")
-            else:
-                log_event("INFO", "MATH", f"{asset} - MACD: Veri yetersiz")
-                
-            if ema_val is not None and current_price is not None:
-                ema_diff_pct = ((current_price - ema_val) / ema_val) * 100
-                log_event("INFO", "MATH", f"{asset} - EMA 20: ${ema_val:.2f}, Fiyat: ${current_price:.2f} (Eşik farkı: %{ema_diff_pct:+.2f})")
-            else:
-                log_event("INFO", "MATH", f"{asset} - EMA 20: Veri veya fiyat yetersiz")
-            
-            # ---------------- RISK CHECK: STOP LOSS & TAKE PROFIT MONITORING ----------------
-            active_pos = get_active_position(asset)
-            if active_pos and current_price is not None:
-                sl_val = active_pos.get("stop_loss")
-                tp_val = active_pos.get("take_profit")
-                buy_price = active_pos.get("price")
-                log_event("INFO", "WORKER", f"Active position found for {asset} at entry price ${buy_price:.2f}. SL: ${sl_val:.2f}, TP: ${tp_val:.2f}. Real-time Price: ${current_price:.2f}")
-                
-                portfolio = get_portfolio()
-                fee_pct = float(get_config("fee_pct", "0.001"))
-                
-                # Check Stop-Loss
-                if sl_val and current_price <= sl_val:
-                    log_event("WARNING", "WORKER", f"🚨 STOP LOSS BREACHED! Real-time price ${current_price:.2f} <= SL ${sl_val:.2f} for {asset}. Triggering liquidation...")
-                    
-                    asset_ticker = asset.split("/")[0]
-                    asset_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
-                    trade_value = asset_balance * current_price
-                    trade_net_value = trade_value * (1 - fee_pct)
-                    
-                    portfolio["USD"]["balance"] = portfolio.get("USD", {}).get("balance", 0.0) + trade_net_value
-                    portfolio[asset_ticker] = {"balance": 0.0, "avg_entry_price": 0.0}
-                    update_portfolio(portfolio)
-                    
-                    pnl_pct = close_active_position(asset, current_price, "STOP_LOSS", f"Stop Loss breached at ${sl_val:.2f}")
-                    log_event("SUCCESS", "WORKER", f"💀 Stop Loss liquidation completed for {asset} with PnL: {pnl_pct:+.2f}%")
-                    portfolio = get_portfolio()
-                    total_nav = calculate_total_nav(portfolio)
-                    continue
-                
-                # Check Take-Profit
-                elif tp_val and current_price >= tp_val:
-                    log_event("SUCCESS", "WORKER", f"🎯 TAKE PROFIT BREACHED! Real-time price ${current_price:.2f} >= TP ${tp_val:.2f} for {asset}. Triggering liquidation...")
-                    
-                    asset_ticker = asset.split("/")[0]
-                    asset_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
-                    trade_value = asset_balance * current_price
-                    trade_net_value = trade_value * (1 - fee_pct)
-                    
-                    portfolio["USD"]["balance"] = portfolio.get("USD", {}).get("balance", 0.0) + trade_net_value
-                    portfolio[asset_ticker] = {"balance": 0.0, "avg_entry_price": 0.0}
-                    update_portfolio(portfolio)
-                    
-                    pnl_pct = close_active_position(asset, current_price, "TAKE_PROFIT", f"Take Profit breached at ${tp_val:.2f}")
-                    log_event("SUCCESS", "WORKER", f"🎉 Take Profit liquidation completed for {asset} with PnL: {pnl_pct:+.2f}%")
-                    portfolio = get_portfolio()
-                    total_nav = calculate_total_nav(portfolio)
-                    continue
-            
-            # Check for deterministic crossover triggers
-            trigger_side, trigger_reason = check_triggers(candles_df)
-            
-            global _last_analyzed_timestamps
-            already_analyzed = (not force and _last_analyzed_timestamps.get(asset) == completed_timestamp)
-            
-            portfolio = get_portfolio()
-            usd_balance = portfolio.get("USD", {}).get("balance", 0.0)
-            asset_ticker = asset.split("/")[0]
-            asset_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
-            
-            if already_analyzed:
-                log_event("INFO", "WORKER", f"{asset}: Candle at {completed_timestamp} already analyzed. Skipping trade decisions.")
+                    save_signal(symbol, "HOLD", None, float(completed["close"]), json.dumps(
+                        {"reason": "Position open; SL/TP guardian active"}))
                 continue
-                
-            if trigger_side:
-                log_event("WARNING", "WORKER", f"💥 Technical [{trigger_side}] Trigger detected for {asset}! Reason: {trigger_reason}")
-                
-                if trigger_side == "BUY" and usd_balance < 10.0:
-                    log_event("INFO", "WORKER", f"Insufficient USD balance (${usd_balance:.2f}) to perform BUY on {asset}. Skipping.")
-                    continue
-                elif trigger_side == "SELL" and asset_balance <= 0.0001:
-                    log_event("INFO", "WORKER", f"No holding of {asset_ticker} ({asset_balance:.4f}) to perform SELL. Skipping.")
-                    continue
-                
-                if trigger_side == "BUY" and active_pos:
-                    log_event("INFO", "WORKER", f"Active position already exists for {asset}. Skipping double-exposure BUY order.")
-                    continue
-                
-                # Check for exit stability: Ignore simple 1H technical exits
-                if trigger_side == "SELL":
-                    log_event("INFO", "WORKER", f"Ignoring 1H technical SELL crossover trigger for {asset} to prevent premature exit. Evaluating macro confluence...")
-                
-                # ---------------- DOUBLE-CHECK MATH FILTER (4h Trend, Volume, Support & Patterns) ----------------
-                log_event("INFO", "WORKER", f"Performing Double-Check Math Filter for {asset} on 4h timeframe...")
-                is_4h_confirmed = False
-                is_volume_confirmed = False
-                double_check_reason = ""
-                
-                # 1. Verify volume on 1h candles
-                try:
-                    latest_vol_1h = float(candles_df.iloc[-2]['volume'])
-                    vol_ma_1h = float(candles_df['volume'].tail(20).mean())
-                    is_volume_confirmed = latest_vol_1h >= vol_ma_1h
-                    double_check_reason += f"Vol confirmed: {is_volume_confirmed} ({latest_vol_1h:.1f} >= MA {vol_ma_1h:.1f}). "
-                except Exception as e:
-                    log_event("WARNING", "WORKER", f"Failed to check volume for {asset}: {e}")
-                
-                # 2. Fetch 4h candles and verify trend
-                candles_df_4h = fetch_ohlcv(symbol=asset, timeframe="4h", limit=100)
-                if candles_df_4h is not None and not candles_df_4h.empty:
-                    is_4h_simulated = False
-                    if '_is_simulated' in candles_df_4h.columns:
-                        is_4h_simulated = bool(candles_df_4h['_is_simulated'].iloc[0])
-                    
-                    if is_4h_simulated:
-                        log_event("WARNING", "WORKER", f"⚠️ 4h timeframe for {asset} is using SIMULATED data. Defaulting 4h trend confirmation to False.")
-                    else:
-                        try:
-                            # Calculate indicators for 4h candles
-                            candles_df_4h = calculate_indicators(candles_df_4h)
-                            c_4h = candles_df_4h.iloc[-2]
-                            close_4h = float(c_4h['close'])
-                            ema_4h = float(c_4h['ema'])
-                            macd_4h = float(c_4h['macd']) if 'macd' in c_4h and c_4h['macd'] is not None else None
-                            sig_4h = float(c_4h['macd_signal']) if 'macd_signal' in c_4h and c_4h['macd_signal'] is not None else None
-                            
-                            if trigger_side == "BUY":
-                                is_4h_confirmed = close_4h > ema_4h
-                                if macd_4h is not None and sig_4h is not None:
-                                    is_4h_confirmed = is_4h_confirmed or (macd_4h > sig_4h)
-                            elif trigger_side == "SELL":
-                                is_4h_confirmed = close_4h < ema_4h
-                                if macd_4h is not None and sig_4h is not None:
-                                    is_4h_confirmed = is_4h_confirmed or (macd_4h < sig_4h)
-                                    
-                            double_check_reason += f"4h Trend confirmed: {is_4h_confirmed}."
-                        except Exception as e:
-                            log_event("WARNING", "WORKER", f"Failed to verify 4h trend for {asset}: {e}")
-                else:
-                    log_event("WARNING", "WORKER", f"Could not fetch 4h candles for {asset}. Defaulting 4h trend confirmation to False.")
-                
-                # 3. Support & Candlestick pattern detection
-                supports, resistances = calculate_support_resistance(candles_df)
-                detected_patterns = check_candlestick_patterns(candles_df)
-                
-                is_near_support = False
-                for sup in supports:
-                    if abs(current_price - sup) / sup <= 0.015: # Within 1.5%
-                        is_near_support = True
-                        break
-                        
-                is_pattern_confirmed = is_near_support or (len(detected_patterns) > 0)
-                pattern_desc = ", ".join(detected_patterns) if detected_patterns else "None"
-                double_check_reason += f" Pattern/Support confirmed: {is_pattern_confirmed} (Patterns: {pattern_desc}, Near Support: {is_near_support})."
-                
-                log_event("INFO", "WORKER", f"Double-Check Filter outcomes for {asset}: {double_check_reason}")
-                
-                # Format technical summary for Gemini prompt context
-                support_str = ", ".join([f"${s:.2f}" for s in supports]) if supports else "None"
-                res_str = ", ".join([f"${r:.2f}" for r in resistances]) if resistances else "None"
-                
-                rsi_str = f"{rsi_val:.1f}" if rsi_val is not None else "0.0"
-                macd_str = f"{macd_val:.4f}" if macd_val is not None else "0.0"
-                sig_str = f"{sig_val:.4f}" if sig_val is not None else "0.0"
-                ema_str = f"${ema_val:.2f}" if ema_val is not None else "0.0"
-                
-                tech_summary = (
-                    f"Asset: {asset}\n"
-                    f"Current Price: ${current_price:.2f}\n"
-                    f"1H Indicators - RSI: {rsi_str}, MACD: {macd_str}, Signal: {sig_str}, EMA 20: {ema_str}\n"
-                    f"Candlestick Patterns: {pattern_desc}\n"
-                    f"Support Levels: {support_str}\n"
-                    f"Resistance Levels: {res_str}\n"
-                    f"Macro Trend (4H): {'Bullish' if is_4h_confirmed else 'Bearish'}\n"
-                    f"Volume Trend: {'Expanding' if is_volume_confirmed else 'Flat/Weak'}\n"
-                )
-                
-                candidates_to_analyze.append({
-                    "asset": asset,
-                    "trigger_side": trigger_side,
-                    "trigger_reason": trigger_reason,
-                    "completed_timestamp": completed_timestamp,
-                    "current_price": current_price,
-                    "asset_ticker": asset_ticker,
-                    "active_pos": active_pos,
-                    "is_4h_confirmed": is_4h_confirmed,
-                    "is_volume_confirmed": is_volume_confirmed,
-                    "is_pattern_confirmed": is_pattern_confirmed,
-                    "technical_summary": tech_summary
-                })
-                
-        except Exception as asset_err:
-            log_event("ERROR", "WORKER", f"Error evaluating {asset} inside tick cycle: {asset_err}")
-            if asset in _last_analyzed_timestamps:
-                _last_analyzed_timestamps[asset] = None
+
+            # ---------- No position: entry evaluation ----------
+            op_gates = []
+            op_gates.append(strategy.GateCheck("market_open", market_open,
+                                               "Market open" if market_open else "Market closed"))
+            op_gates.append(strategy.GateCheck("data_fresh", fresh,
+                                               f"Last candle {last_ts.isoformat()}"))
+            cooldown_until = get_cooldown(symbol)
+            op_gates.append(strategy.GateCheck("cooldown", cooldown_until is None,
+                                               f"Cooling down until {cooldown_until}" if cooldown_until else "No cooldown"))
+            op_gates.append(strategy.GateCheck("circuit_breaker", not cb_active, cb_detail))
+
+            already_analyzed = (not force and analyzed.get(symbol) == completed_ts)
+
+            # drop the in-progress 4h bucket: strategy expects completed bars only
+            df_4h = add_indicators(resample_4h(df_1h).iloc[:-1])
+            bench = benchmarks.get("crypto" if riskmod.is_crypto(symbol) else "equity")
+            sig = strategy.evaluate_entry(df_1h, df_4h, df_daily, bench, cfg, sentiment=None)
+
+            all_gates = op_gates + sig.gates
+            details = {
+                "gates": [{"name": g.name, "passed": g.passed, "detail": g.detail} for g in all_gates],
+                "factors": sig.factors, "score": sig.score, "reason": sig.reason,
+            }
+
+            if not all(g.passed for g in op_gates) or not sig.should_enter or already_analyzed:
+                decision = "SKIP"
+                if already_analyzed and sig.should_enter:
+                    details["reason"] = "Candle already analyzed (duplicate suppression)"
+                save_signal(symbol, decision, sig.score, float(completed["close"]), json.dumps(details))
+                continue
+
+            log_event("INFO", "WORKER",
+                      f"💡 {symbol}: entry candidate ({sig.trigger}) score {sig.score}. {sig.reason}")
+            candidates.append({
+                "symbol": symbol, "df_1h": df_1h, "df_4h": df_4h, "df_daily": df_daily,
+                "bench": bench, "completed_ts": completed_ts, "details": details,
+            })
+        except Exception as err:
+            log_event("ERROR", "WORKER", f"Error evaluating {symbol}: {err}")
             import traceback
             traceback.print_exc()
 
-    # Process batch sentiment for all candidates
-    if candidates_to_analyze:
-        log_event("INFO", "WORKER", f"Processing news sentiment for {len(candidates_to_analyze)} candidate assets in a single batch...")
-        
+    # ---------- AI sentiment for candidates (batched, optional) ----------
+    sentiment_map = {}
+    if candidates and ai_available:
         batch_input = []
-        local_sentiment_overrides = {}
-        successful_candidates = []
-        
-        for c in candidates_to_analyze:
-            news = None
+        for c in candidates:
+            news = []
             try:
-                news = fetch_asset_news(c["asset"], limit=10)
+                news = fetch_asset_news(c["symbol"], limit=10)
             except Exception as e:
-                log_event("WARNING", "WORKER", f"Exception fetching news for {c['asset']}: {e}")
-                
-            if not news:
-                log_event("WARNING", "WORKER", f"No live news fetched for {c['asset']}. Failsafe: Proceeding with neutral sentiment (0) without AI call.")
-                local_sentiment_overrides[c["asset"]] = {
-                    "symbol": c["asset"],
-                    "sentiment_score": 0,
-                    "reason": "Failsafe: No news articles could be fetched. Defaulted to neutral sentiment.",
-                    "digest": "No news articles could be fetched.",
-                    "is_simulated": False
-                }
-                successful_candidates.append(c)
-                continue
-                
-            batch_input.append({
-                "symbol": c["asset"],
-                "news_items": news,
-                "technical_summary": c["technical_summary"]
-            })
-            successful_candidates.append(c)
-            
-        candidates_to_analyze = successful_candidates
-            
-        # Call batch sentiment analyzer
-        ai_results = []
+                log_event("WARNING", "WORKER", f"News fetch failed for {c['symbol']}: {e}")
+            if news:
+                batch_input.append({"symbol": c["symbol"], "news_items": news,
+                                    "technical_summary": c["details"].get("reason", "")})
         if batch_input:
             try:
                 from ai.sentiment_analyzer import analyze_sentiment_batch
-                ai_results = analyze_sentiment_batch(batch_input)
+                for res in analyze_sentiment_batch(batch_input):
+                    if not res.get("is_simulated"):
+                        sentiment_map[res["symbol"]] = int(res["sentiment_score"])
             except Exception as e:
-                log_event("ERROR", "WORKER", f"Batch sentiment analysis failed: {e}. Failsafe: Defaulting all batch candidates to neutral sentiment (0).")
-                for item in batch_input:
-                    local_sentiment_overrides[item["symbol"]] = {
-                        "symbol": item["symbol"],
-                        "sentiment_score": 0,
-                        "reason": f"Failsafe: AI model call failed ({e}). Defaulted to neutral sentiment.",
-                        "digest": "AI analysis error fallback.",
-                        "is_simulated": False
-                    }
-        
-        # Combine batch results and local overrides
-        ai_map = {res["symbol"]: res for res in ai_results}
-        for sym, res in local_sentiment_overrides.items():
-            ai_map[sym] = res
-        
-        portfolio = get_portfolio()
-        total_nav = calculate_total_nav(portfolio)
-        
-        for c in candidates_to_analyze:
-            asset = c["asset"]
-            trigger_side = c["trigger_side"]
-            trigger_reason = c["trigger_reason"]
-            completed_timestamp = c["completed_timestamp"]
-            current_price = c["current_price"]
-            asset_ticker = c["asset_ticker"]
-            active_pos = c["active_pos"]
-            
-            usd_balance = portfolio.get("USD", {}).get("balance", 0.0)
-            asset_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
-            
-            ai_res = ai_map.get(asset)
-            if not ai_res:
-                log_event("WARNING", "WORKER", f"No AI sentiment results returned for {asset}. Skipping.")
-                _last_analyzed_timestamps[asset] = completed_timestamp
-                continue
-                
-            sentiment_score = ai_res["sentiment_score"]
-            ai_reason = ai_res["reason"]
-            is_ai_simulated = ai_res.get("is_simulated", False)
-            
-            if is_ai_simulated:
-                log_event("WARNING", "WORKER", f"⚠️ AI sentiment or news for {asset} is SIMULATED/MOCK (YFinance / news offline). Skipping trade decisions for safety.")
-                continue
-            
-            log_event("INFO", "WORKER", f"Gemini Sentiment outcome for {asset}: {sentiment_score} (Reason: '{ai_reason}')")
-            
-            # Evaluate trade thresholds with hybrid sizing and veto logic
-            if trigger_side == "BUY":
-                if active_pos or usd_balance < 10.0:
-                    log_event("INFO", "WORKER", f"Skipping trade execution for {asset} (usd_balance: ${usd_balance:.2f}, active_pos: {active_pos})")
-                    _last_analyzed_timestamps[asset] = completed_timestamp
-                    continue
-                
-                # Multi-Factor Scoring Sizing System (0 to 4 points)
-                is_4h_confirmed = c.get("is_4h_confirmed", False)
-                is_volume_confirmed = c.get("is_volume_confirmed", False)
-                is_pattern_confirmed = c.get("is_pattern_confirmed", False)
-                is_news_confirmed = sentiment_score >= sentiment_threshold
-                
-                score = 0
-                scoring_details = []
-                
-                if is_4h_confirmed:
-                    score += 1
-                    scoring_details.append("4H Trend (+1)")
-                if is_volume_confirmed:
-                    score += 1
-                    scoring_details.append("Volume (+1)")
-                if is_news_confirmed:
-                    score += 1
-                    scoring_details.append("AI Sentiment (+1)")
-                if is_pattern_confirmed:
-                    score += 1
-                    scoring_details.append("Pattern/Support (+1)")
-                    
-                scoring_str = ", ".join(scoring_details) if scoring_details else "None"
-                
-                # Score verification checks
-                if score < 2:
-                    log_event("WARNING", "WORKER", f"❌ Technical BUY filtered out. Score: {score}/4 ({scoring_str}). Min required score: 2. Reason: {ai_reason}")
-                    _last_analyzed_timestamps[asset] = completed_timestamp
-                    continue
-                
-                # Dynamic Sizing rules
-                if score == 2:
-                    applied_risk_pct = risk_pct * 0.50
-                    sizing_reason = f"Moderate Confidence (Score 2/4 | {scoring_str}) | Applied risk: {applied_risk_pct:.2f}% of NAV"
-                elif score == 3:
-                    applied_risk_pct = risk_pct * 0.75
-                    sizing_reason = f"High Confidence (Score 3/4 | {scoring_str}) | Applied risk: {applied_risk_pct:.2f}% of NAV"
-                else: # score == 4
-                    applied_risk_pct = risk_pct * 1.00
-                    sizing_reason = f"Maximum Confidence (Score 4/4 | {scoring_str}) | Applied risk: {applied_risk_pct:.2f}% of NAV"
-                
-                trade_value = total_nav * (applied_risk_pct / 100.0)
-                trade_value = min(trade_value, usd_balance)
-                
-                if trade_value < 10.0:
-                    log_event("WARNING", "WORKER", f"Trade size ${trade_value:.2f} is below $10 minimum. Skipping BUY on {asset}.")
-                    _last_analyzed_timestamps[asset] = completed_timestamp
-                    continue
-                    
-                fee_pct = float(get_config("fee_pct", "0.001"))
-                trade_net_value = trade_value * (1 - fee_pct)
-                amount_to_buy = trade_net_value / current_price
-                
-                portfolio["USD"]["balance"] = usd_balance - trade_value
-                
-                existing_asset = portfolio.get(asset_ticker, {"balance": 0.0, "avg_entry_price": 0.0})
-                old_balance = existing_asset["balance"]
-                old_avg = existing_asset["avg_entry_price"]
-                
-                new_balance = old_balance + amount_to_buy
-                new_avg = ((old_balance * old_avg) + (amount_to_buy * current_price)) / new_balance if new_balance > 0 else current_price
-                
-                portfolio[asset_ticker] = {
-                    "balance": new_balance,
-                    "avg_entry_price": new_avg
-                }
-                
-                sl_price = current_price * (1 - sl_pct / 100.0)
-                tp_price = current_price * (1 + tp_pct / 100.0)
-                
-                update_portfolio(portfolio)
-                record_trade(
-                    asset=asset,
-                    side="BUY",
-                    price=current_price,
-                    amount=amount_to_buy,
-                    trade_type="AI_HYBRID",
-                    sentiment_score=sentiment_score,
-                    reason=f"Technical: {trigger_reason} | AI: {ai_reason} | Sizing: {sizing_reason}",
-                    stop_loss=sl_price,
-                    take_profit=tp_price,
-                    is_active=1
-                )
-                log_event("SUCCESS", "WORKER", f"🛒 PAPER BUY EXECUTED: Bought {amount_to_buy:.4f} {asset_ticker} at ${current_price:.2f} | SL: ${sl_price:.2f}, TP: ${tp_price:.2f} (NAV size: ${trade_value:.2f})")
-                
-                portfolio = get_portfolio()
-                total_nav = calculate_total_nav(portfolio)
-                    
-            elif trigger_side == "SELL":
-                if asset_balance <= 0.0001:
-                    log_event("INFO", "WORKER", f"Skipping sell trade execution for {asset} (asset_balance: {asset_balance:.4f})")
-                    _last_analyzed_timestamps[asset] = completed_timestamp
-                    continue
-                
-                # Confluence Exit verification
-                is_4h_bearish = not c.get("is_4h_confirmed", True) # if not confirmed bullish, it is bearish
-                is_news_bearish = sentiment_score <= -3
-                
-                # Check for confluence: 4H Trend Bearish AND AI Sentiment Bearish
-                if is_4h_bearish and is_news_bearish:
-                    log_event("WARNING", "WORKER", f"⚠️ Bearish confluence exit met for {asset}! 4H trend is bearish and AI sentiment is bearish ({sentiment_score}). Executing sell...")
-                else:
-                    log_event("INFO", "WORKER", f"Confluence exit NOT met for {asset}. Ignoring 1H crossover sell. Letting position ride (SL/TP/Trailing active). 4H Trend Bearish: {is_4h_bearish}, AI Bearish: {is_news_bearish}")
-                    _last_analyzed_timestamps[asset] = completed_timestamp
-                    continue
-                
-                amount_to_sell = asset_balance
-                trade_value = amount_to_sell * current_price
-                fee_pct = float(get_config("fee_pct", "0.001"))
-                trade_net_value = trade_value * (1 - fee_pct)
-                
-                portfolio["USD"]["balance"] = usd_balance + trade_net_value
-                portfolio[asset_ticker] = {
-                    "balance": 0.0,
-                    "avg_entry_price": 0.0
-                }
-                
-                update_portfolio(portfolio)
-                
-                if active_pos:
-                    pnl_pct = close_active_position(asset, current_price, "AI_HYBRID", f"Confluence Exit. 4H Trend Bearish: {is_4h_bearish}, AI Sentiment: {sentiment_score}")
-                    log_event("SUCCESS", "WORKER", f"💰 PAPER SELL (POSITION CLOSED): Sold {amount_to_sell:.4f} {asset_ticker} at ${current_price:.2f} (Net: ${trade_net_value:.2f}, PnL: {pnl_pct:+.2f}%)")
-                else:
-                    record_trade(
-                        asset=asset,
-                        side="SELL",
-                        price=current_price,
-                        amount=amount_to_sell,
-                        trade_type="AI_HYBRID",
-                        sentiment_score=sentiment_score,
-                        reason=f"Technical: {trigger_reason} | AI sentiment: {sentiment_score}",
-                        is_active=0
-                    )
-                    log_event("SUCCESS", "WORKER", f"💰 PAPER SELL EXECUTED: Sold {amount_to_sell:.4f} {asset_ticker} at ${current_price:.2f} (Net: ${trade_net_value:.2f})")
-                    
-                portfolio = get_portfolio()
-                total_nav = calculate_total_nav(portfolio)
-            
-            # Set completed candle timestamp to analyzed
-            _last_analyzed_timestamps[asset] = completed_timestamp
-            
-    log_event("INFO", "WORKER", "Algorithmic market analysis tick complete.")
+                log_event("WARNING", "WORKER", f"AI sentiment batch failed ({e}); continuing technical-only.")
 
-def pd_isna(val):
-    """Helper to safely check for pandas nan."""
-    try:
-        if val is None:
-            return True
-        if isinstance(val, float) and math.isnan(val):
-            return True
-        return False
-    except Exception:
-        return False
+    # ---------- Execute entries ----------
+    for c in candidates:
+        symbol = c["symbol"]
+        try:
+            sentiment = sentiment_map.get(symbol)
+            entry_price = fetch_realtime_price(symbol)
+            if entry_price is None:
+                entry_price = float(c["df_1h"].iloc[-2]["close"])
+
+            sig = strategy.evaluate_entry(c["df_1h"], c["df_4h"], c["df_daily"], c["bench"],
+                                          cfg, sentiment=sentiment, entry_price=entry_price)
+            details = {
+                "gates": [{"name": g.name, "passed": g.passed, "detail": g.detail} for g in sig.gates],
+                "factors": sig.factors, "score": sig.score, "reason": sig.reason,
+                "sentiment": sentiment,
+            }
+            analyzed[symbol] = c["completed_ts"]
+
+            if not sig.should_enter:
+                save_signal(symbol, "SKIP", sig.score, entry_price, json.dumps(details))
+                log_event("INFO", "WORKER", f"{symbol}: entry dropped after AI check. {sig.reason}")
+                continue
+
+            nav, cash, exposure = accounting.calculate_nav()
+            open_count = accounting.count_open_positions()
+            sizing = riskmod.compute_position_size(nav, cash, entry_price, sig.stop,
+                                                   sig.conf_mult, exposure, open_count, cfg)
+            if not sizing.ok:
+                details["sizing"] = sizing.reason
+                save_signal(symbol, "SKIP", sig.score, entry_price, json.dumps(details))
+                log_event("INFO", "WORKER", f"{symbol}: sizing rejected — {sizing.reason}")
+                continue
+
+            trade = accounting.execute_buy(
+                symbol, entry_price, sizing.quantity, cfg,
+                trade_type="STRATEGY", sentiment_score=sentiment,
+                reason=f"{sig.reason} | {sizing.reason}",
+                stop_loss=sig.stop, take_profit=sig.take_profit,
+                trail_dist=sig.trail_dist, entry_atr=sig.entry_atr,
+                confluence_score=sig.score)
+            if trade:
+                details["sizing"] = sizing.reason
+                save_signal(symbol, "ENTER", sig.score, trade["price"], json.dumps(details))
+                log_event("SUCCESS", "WORKER",
+                          f"🛒 BUY {symbol}: {trade['amount']:.4f} @ ${trade['price']:.2f} "
+                          f"(score {sig.score}, risk ${sizing.risk_amount:.2f}) "
+                          f"SL ${sig.stop:.2f} TP ${sig.take_profit:.2f}")
+        except Exception as err:
+            log_event("ERROR", "WORKER", f"Entry execution failed for {symbol}: {err}")
+
+    _save_analyzed(analyzed)
+    nav, cash, _ = accounting.calculate_nav()
+    record_equity_snapshot(nav, cash, min_gap_seconds=0)
+    log_event("INFO", "WORKER", f"Analysis cycle complete. NAV ${nav:.2f}, cash ${cash:.2f}.")
+
 
 def run_sltp_guardian():
-    """
-    Fast SL/TP and Trailing Stop Loss guardian loop.
-    Checks real-time prices and updates trailing stop-loss values dynamically if in profit.
-    """
-    # Verify bot active status
-    bot_running = get_config("bot_running", "false") == "true"
-    if not bot_running:
+    """Fast loop: trailing-stop updates and SL/TP enforcement on live prices."""
+    if get_config("bot_running", "false") != "true":
+        return
+    positions = get_all_active_positions()
+    if not positions:
         return
 
-    active_positions = get_all_active_positions()
-    if not active_positions:
-        return
-    
-    fee_pct = float(get_config("fee_pct", "0.001"))
-    trailing_pct = float(get_config("trailing_stop_loss_pct", "2.0"))
-    
-    for pos in active_positions:
-        asset = pos['asset']
-        sl_val = pos.get('stop_loss')
-        tp_val = pos.get('take_profit')
-        buy_price = pos.get('price')
-        
-        if not sl_val and not tp_val:
-            continue
-        
-        # Get real-time price
-        current_price = fetch_realtime_price(asset)
-        if current_price is None:
-            log_event("WARNING", "SL_TP_GUARD", f"Cannot fetch price for {asset}. Skipping SL/TP check.")
-            continue
-        
-        asset_ticker = asset.split("/")[0]
-        
-        # ---------------- TRAILING STOP LOSS UPDATE ----------------
-        if current_price > buy_price:
-            # Trailing target stop level: current_price - trailing_pct%
-            target_sl = current_price * (1 - trailing_pct / 100.0)
-            if sl_val is None or target_sl > sl_val:
-                # Update stop loss in DB
-                try:
-                    conn = get_connection()
-                    cursor = conn.cursor()
-                    cursor.execute("UPDATE trades SET stop_loss = ? WHERE id = ?", (target_sl, pos['id']))
-                    conn.commit()
-                    conn.close()
-                    
-                    log_event("SUCCESS", "SL_TP_GUARD", f"📈 Trailing Stop Loss updated for {asset}: ${sl_val:.2f} -> ${target_sl:.2f} (Locked profit at current price ${current_price:.2f})")
-                    sl_val = target_sl # Use updated stop loss for subsequent check below
-                    
-                    # Notify user via Telegram
-                    try:
-                        from core.telegram_bot import send_telegram_message
-                        send_telegram_message(f"🛡️ *Takip Eden Stop Güncellendi (Trailing SL)*\n• *Varlık:* `{asset}`\n• *Eski Stop:* `${pos.get('stop_loss'):,.2f}`\n• *Yeni Stop:* `${target_sl:,.2f}`\n• *Anlık Fiyat:* `${current_price:,.2f}`")
-                    except Exception:
-                        pass
-                except Exception as e:
-                    log_event("ERROR", "SL_TP_GUARD", f"Failed to update trailing stop loss: {e}")
-        
-        # Check Stop-Loss
-        if sl_val and current_price <= sl_val:
-            log_event("WARNING", "SL_TP_GUARD", f"🚨 STOP LOSS BREACHED! Real-time ${current_price:.2f} <= SL ${sl_val:.2f} for {asset}")
-            
-            portfolio = get_portfolio()
-            asset_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
-            trade_value = asset_balance * current_price
-            trade_net_value = trade_value * (1 - fee_pct)
-            
-            portfolio["USD"]["balance"] = portfolio.get("USD", {}).get("balance", 0.0) + trade_net_value
-            portfolio[asset_ticker] = {"balance": 0.0, "avg_entry_price": 0.0}
-            update_portfolio(portfolio)
-            
-            pnl_pct = close_active_position(asset, current_price, "STOP_LOSS", f"SL Guardian: breached at ${sl_val:.2f}")
-            log_event("SUCCESS", "SL_TP_GUARD", f"💀 Stop Loss liquidation for {asset}: PnL {pnl_pct:+.2f}%")
-        
-        # Check Take-Profit
-        elif tp_val and current_price >= tp_val:
-            log_event("SUCCESS", "SL_TP_GUARD", f"🎯 TAKE PROFIT BREACHED! Real-time ${current_price:.2f} >= TP ${tp_val:.2f} for {asset}")
-            
-            portfolio = get_portfolio()
-            asset_balance = portfolio.get(asset_ticker, {}).get("balance", 0.0)
-            trade_value = asset_balance * current_price
-            trade_net_value = trade_value * (1 - fee_pct)
-            
-            portfolio["USD"]["balance"] = portfolio.get("USD", {}).get("balance", 0.0) + trade_net_value
-            portfolio[asset_ticker] = {"balance": 0.0, "avg_entry_price": 0.0}
-            update_portfolio(portfolio)
-            
-            pnl_pct = close_active_position(asset, current_price, "TAKE_PROFIT", f"TP Guardian: breached at ${tp_val:.2f}")
-            log_event("SUCCESS", "SL_TP_GUARD", f"🎉 Take Profit liquidation for {asset}: PnL {pnl_pct:+.2f}%")
+    cfg = StrategyConfig.from_db()
+    now_utc = datetime.now(timezone.utc)
+
+    for pos in positions:
+        symbol = pos["asset"]
+        try:
+            if not riskmod.is_market_open(symbol, now_utc):
+                continue  # never act on stale off-hours prices
+
+            price = fetch_realtime_price(symbol)
+            if price is None:
+                log_event("WARNING", "GUARDIAN", f"{symbol}: no live price; skipping check.")
+                continue
+
+            new_stop, new_hwm = strategy.update_trailing_stop(pos, price, cfg)
+            old_stop = pos.get("stop_loss")
+            if new_stop is not None and (old_stop is None or new_stop > float(old_stop) + 1e-9):
+                update_trade_fields(pos["id"], stop_loss=new_stop, high_watermark=new_hwm)
+                log_event("INFO", "GUARDIAN",
+                          f"📈 {symbol}: trailing stop {float(old_stop or 0):.2f} → {new_stop:.2f} "
+                          f"(price ${price:.2f})")
+                pos["stop_loss"] = new_stop
+            elif new_hwm > float(pos.get("high_watermark") or 0):
+                update_trade_fields(pos["id"], high_watermark=new_hwm)
+
+            sl = pos.get("stop_loss")
+            tp = pos.get("take_profit")
+            if sl is not None and price <= float(sl):
+                log_event("WARNING", "GUARDIAN", f"🚨 {symbol}: STOP hit (${price:.2f} <= ${float(sl):.2f})")
+                accounting.execute_sell(symbol, price, cfg, trade_type="STOP_LOSS",
+                                        reason=f"Stop-loss hit at ${float(sl):.2f}")
+            elif tp is not None and price >= float(tp):
+                log_event("SUCCESS", "GUARDIAN", f"🎯 {symbol}: TAKE PROFIT hit (${price:.2f} >= ${float(tp):.2f})")
+                accounting.execute_sell(symbol, price, cfg, trade_type="TAKE_PROFIT",
+                                        reason=f"Take-profit hit at ${float(tp):.2f}")
+        except Exception as e:
+            log_event("ERROR", "GUARDIAN", f"Guardian error for {symbol}: {e}")
+
 
 def run_analysis_scheduler_loop():
-    """
-    Background loop that runs the market analysis cycle at the configured interval.
-    """
     log_event("INFO", "WORKER", "Analysis scheduler thread started.")
-    last_analysis_time = 0
-    
+    last_run = 0.0
     while True:
         try:
-            bot_running = get_config("bot_running", "false") == "true"
-            if not bot_running:
+            if get_config("bot_running", "false") != "true":
                 time.sleep(10)
                 continue
-                
-            # Verify VPN status if enabled
-            vpn_check_enabled = get_config("vpn_check_enabled", "false") == "true"
-            if vpn_check_enabled:
-                vpn_status = get_config("vpn_status", "disconnected")
-                if vpn_status != "connected":
-                    time.sleep(15)
-                    continue
-                
+            if get_config("vpn_check_enabled", "false") == "true" and \
+                    get_config("vpn_status", "disconnected") != "connected":
+                time.sleep(15)
+                continue
             try:
-                analysis_interval = int(get_config("simulation_interval_seconds") or os.getenv("SIMULATION_INTERVAL_SECONDS", "300"))
-            except Exception:
-                analysis_interval = 300
-                
-            now = time.time()
-            elapsed = now - last_analysis_time
-            if last_analysis_time == 0 or elapsed >= analysis_interval:
-                log_event("INFO", "WORKER", f"Analysis thread: Running scheduled analysis cycle (elapsed: {elapsed:.0f}s)...")
+                interval = int(get_config("simulation_interval_seconds")
+                               or os.getenv("SIMULATION_INTERVAL_SECONDS", "300"))
+            except (TypeError, ValueError):
+                interval = 300
+            if last_run == 0.0 or time.time() - last_run >= interval:
                 try:
                     run_worker_cycle()
                 except Exception as cycle_err:
-                    log_event("ERROR", "WORKER", f"Error executing analysis cycle: {cycle_err}")
-                last_analysis_time = time.time()
-                
+                    log_event("ERROR", "WORKER", f"Cycle error: {cycle_err}")
+                last_run = time.time()
             time.sleep(10)
         except Exception as e:
-            log_event("ERROR", "WORKER", f"Error in analysis scheduler loop: {e}")
+            log_event("ERROR", "WORKER", f"Scheduler loop error: {e}")
             time.sleep(10)
 
-def main():
-    """Main worker initialization and execution loop with dual-speed architecture."""
-    print("====================================================")
-    print("       SENTIX STOCK TRADING BACKGROUND WORKER       ")
-    print("    Dual-Loop: SL/TP Guardian (30s) + Analysis (300s)")
-    print("====================================================")
-    
-    # Initialize database
-    init_db()
-    
-    # Load default stock configurations
-    default_stock_watchlist = "AAPL/USD,MSFT/USD,NVDA/USD,AMD/USD,ARM/USD,TSM/USD,AVGO/USD,ASML/USD,AMZN/USD,GOOGL/USD,META/USD,TSLA/USD,QQQ/USD,SPY/USD"
-    if not get_config("selected_assets"):
-        save_config("selected_assets", default_stock_watchlist)
-    if not get_config("min_ai_sentiment_threshold"):
-        save_config("min_ai_sentiment_threshold", "3")
-    if not get_config("summarizer_model"):
-        save_config("summarizer_model", "gemini-3.1-flash-lite")
-    if not get_config("sentiment_model"):
-        save_config("sentiment_model", "gemini-3.5-flash")
-    if not get_config("gemini_api_key"):
-        save_config("gemini_api_key", os.getenv("GEMINI_API_KEY", ""))
-    if not get_config("risk_percentage"):
-        save_config("risk_percentage", "2.0")
-    if not get_config("stop_loss_pct"):
-        save_config("stop_loss_pct", "2.0")  # Tighter default for stocks
-    if not get_config("take_profit_pct"):
-        save_config("take_profit_pct", "5.0")  # Tighter default for stocks
-    if not get_config("trailing_stop_loss_pct"):
-        save_config("trailing_stop_loss_pct", "2.0")
-    if not get_config("vpn_check_enabled"):
-        save_config("vpn_check_enabled", "false")
-    if not get_config("bot_running"):
-        save_config("bot_running", "true")
-    if not get_config("fee_pct"):
-        save_config("fee_pct", "0.0005") # Stock transaction fees are typically lower
-    if not get_config("news_freshness_hours"):
-        save_config("news_freshness_hours", "24")
-    if not get_config("live_mode"):
-        save_config("live_mode", os.getenv("LIVE_MODE", "false"))
 
-    log_event("INFO", "WORKER", "Background worker initialized.")
-    
-    guardian_interval = int(os.getenv("GUARDIAN_INTERVAL_SECONDS", "30"))
-    log_event("INFO", "WORKER", f"SL/TP Guardian interval: {guardian_interval}s")
-    
-    try:
-        save_config("worker_heartbeat", datetime.now(timezone.utc).isoformat())
-    except Exception:
-        pass
-    
-    # Initialize VPN check only if enabled
-    vpn_check_enabled = get_config("vpn_check_enabled", "false") == "true"
-    if vpn_check_enabled:
+def _init_default_config():
+    defaults = {
+        "selected_assets": ",".join(StrategyConfig().watchlist),
+        "min_ai_sentiment_threshold": "3",
+        "summarizer_model": "gemini-3.1-flash-lite",
+        "sentiment_model": "gemini-3.5-flash",
+        "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
+        "risk_per_trade_pct": "1.0",
+        "max_open_positions": "5",
+        "max_position_pct": "20.0",
+        "max_total_exposure_pct": "80.0",
+        "daily_loss_limit_pct": "3.0",
+        "cooldown_hours": "24",
+        "atr_mult_sl": "2.5",
+        "rr_ratio": "2.0",
+        "trail_atr_mult": "2.5",
+        "fee_pct": "0.0005",
+        "slippage_pct": "0.0005",
+        "market_filter_enabled": "true",
+        "ai_enabled": "true",
+        "news_freshness_hours": "24",
+        "vpn_check_enabled": "false",
+        "bot_running": "true",
+        "live_mode": os.getenv("LIVE_MODE", "false"),
+    }
+    for key, value in defaults.items():
+        if not get_config(key):
+            save_config(key, value)
+
+
+def main():
+    print("=" * 56)
+    print("        SENTIX v2 TRADING WORKER (paper trading)")
+    print("   Analysis loop + Guardian loop | ATR risk engine")
+    print("=" * 56)
+
+    init_db()
+    _init_default_config()
+    log_event("INFO", "WORKER", "Worker initialized (Sentix v2 engine).")
+
+    guardian_interval = int(os.getenv("GUARDIAN_INTERVAL_SECONDS", "60"))
+    save_config("worker_heartbeat", datetime.now(timezone.utc).isoformat())
+
+    if get_config("vpn_check_enabled", "false") == "true":
         from core.data_fetcher import check_vpn_connection
         while not check_vpn_connection():
-            log_event("WARNING", "WORKER", "⚠️ VPN connection is down on startup! Retrying VPN check in 15 seconds...")
+            log_event("WARNING", "WORKER", "VPN down on startup; retrying in 15s...")
             save_config("vpn_status", "disconnected")
             time.sleep(15)
-        save_config("vpn_status", "connected")
-    else:
-        save_config("vpn_status", "connected")
-    
-    # Start Telegram Bot listener thread
+    save_config("vpn_status", "connected")
+
     try:
         from core.telegram_bot import start_telegram_bot, send_telegram_message
         start_telegram_bot()
-        send_telegram_message("🟢 *Sentix Hisse Senedi Algoritmik Trading Botu başarıyla başlatıldı!* Sunucu aktif.")
+        send_telegram_message("🟢 *Sentix v2 başlatıldı!* ATR tabanlı risk motoru aktif.")
     except Exception as tg_err:
-        log_event("ERROR", "WORKER", f"Could not start Telegram Bot listener: {tg_err}")
-        
-    # Start Analysis Scheduler thread
-    try:
-        import threading
-        t = threading.Thread(target=run_analysis_scheduler_loop, daemon=True, name="AnalysisSchedulerThread")
-        t.start()
-    except Exception as sched_err:
-        log_event("ERROR", "WORKER", f"Could not start Analysis Scheduler thread: {sched_err}")
-    
-    # Main thread loop (Guardian SL/TP and idle manager)
-    last_vpn_check_time = time.time()
-    vpn_connected = True
-    
+        log_event("WARNING", "WORKER", f"Telegram bot not started: {tg_err}")
+
+    threading.Thread(target=run_analysis_scheduler_loop, daemon=True,
+                     name="AnalysisSchedulerThread").start()
+
+    last_vpn_check, vpn_connected = time.time(), True
     while True:
         try:
-            try:
-                save_config("worker_heartbeat", datetime.now(timezone.utc).isoformat())
-            except Exception:
-                pass
-                
-            bot_running = get_config("bot_running", "false") == "true"
-            if not bot_running:
+            save_config("worker_heartbeat", datetime.now(timezone.utc).isoformat())
+            if get_config("bot_running", "false") != "true":
                 time.sleep(5)
                 continue
-            
-            vpn_check_enabled = get_config("vpn_check_enabled", "false") == "true"
-            if vpn_check_enabled:
+
+            if get_config("vpn_check_enabled", "false") == "true":
                 now = time.time()
-                should_check_vpn = (not vpn_connected) or (now - last_vpn_check_time >= 300)
-                
-                if should_check_vpn:
+                if (not vpn_connected) or (now - last_vpn_check >= 300):
                     from core.data_fetcher import check_vpn_connection
-                    current_vpn_state = check_vpn_connection()
-                    last_vpn_check_time = now
-                    
-                    if current_vpn_state != vpn_connected:
+                    state = check_vpn_connection()
+                    last_vpn_check = now
+                    if state != vpn_connected:
                         try:
                             from core.telegram_bot import send_telegram_message, get_vpn_logs
-                            if current_vpn_state:
-                                send_telegram_message("🔒 *VPN Bağlantısı Yeniden Sağlandı!* Pozisyon koruma guardian'ı devam ediyor.")
+                            if state:
+                                send_telegram_message("🔒 *VPN bağlantısı geri geldi.* Koruma devam ediyor.")
                             else:
-                                logs = get_vpn_logs(tail=5)
-                                alert_msg = (
-                                    "🚨 *VPN Bağlantısı Koptu!*\n"
-                                    "Tüm trading işlemleri ve SL/TP koruyucuları durduruldu.\n\n"
-                                    "*VPN Logları:*\n"
-                                    f"```\n{logs}\n```"
-                                )
-                                send_telegram_message(alert_msg)
+                                send_telegram_message("🚨 *VPN koptu!* Tüm işlemler durduruldu.\n\n"
+                                                      f"```\n{get_vpn_logs(tail=5)}\n```")
                         except Exception:
                             pass
-                    
-                    vpn_connected = current_vpn_state
-                    
-                    if not vpn_connected:
-                        log_event("WARNING", "WORKER", "⚠️ VPN down. Pausing all operations. Retrying in 15 seconds...")
-                        save_config("vpn_status", "disconnected")
+                    vpn_connected = state
+                    save_config("vpn_status", "connected" if state else "disconnected")
+                    if not state:
                         time.sleep(15)
                         continue
-                        
-                    save_config("vpn_status", "connected")
-            
+
             run_sltp_guardian()
             time.sleep(guardian_interval)
-            
         except KeyboardInterrupt:
-            log_event("INFO", "WORKER", "Worker shutdown requested by user.")
+            log_event("INFO", "WORKER", "Worker shutdown requested.")
             break
         except Exception as e:
-            log_event("ERROR", "WORKER", f"Unhandled error in main loop: {e}")
+            log_event("ERROR", "WORKER", f"Main loop error: {e}")
             time.sleep(guardian_interval)
+
 
 if __name__ == "__main__":
     main()

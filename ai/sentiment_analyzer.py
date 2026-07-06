@@ -1,12 +1,11 @@
 import os
 import json
-import random
 import time
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from core.db import log_event, get_config, save_ai_run
 from dotenv import load_dotenv
 
@@ -376,48 +375,20 @@ def analyze_sentiment(symbol="AAPL/USD", news_items=None, sentiment_model_overri
         return results[0]
     return {"sentiment_score": 0, "reason": "Sentiment analysis failed.", "digest": "", "is_simulated": True}
 
-def run_simulated_sentiment(symbol="AAPL/USD", news_items=None):
+def run_simulated_sentiment(symbol="AAPL", news_items=None):
+    """Neutral fallback when the AI is unavailable.
+
+    v1 returned RANDOM scores here, which then influenced position sizing —
+    fake data must never look like a real signal. The fallback is always
+    neutral (0) and flagged, so the strategy treats it as 'no AI input'.
     """
-    Intelligent simulated fallback that scans keywords in the articles to 
-    produce an appropriate score and single-sentence explanation.
-    """
-    if not news_items:
-        return {"sentiment_score": 0, "reason": "No news articles to simulate.", "digest": "No news articles to simulate."}
-        
-    score = 0
-    positive_words = ["breakout", "rally", "upgrade", "inflow", "earnings beat", "guidance raise", "growth", "support", "bullish", "acquisition"]
-    negative_words = ["correction", "concern", "earnings miss", "regulatory", "headwinds", "cautious", "drop", "bearish", "downgrade", "fall"]
-    
-    pos_count = 0
-    neg_count = 0
-    
-    for item in news_items:
-        text = (item["title"] + " " + item["description"]).lower()
-        for pw in positive_words:
-            if pw in text:
-                pos_count += 1
-        for nw in negative_words:
-            if nw in text:
-                neg_count += 1
-                
-    if pos_count > neg_count:
-        score = random.randint(3, 7)
-        reason = f"Simulated sentiment evaluates to positive bullish drift (+{score}) due to technology sector demand and guidance estimates."
-    elif neg_count > pos_count:
-        score = random.randint(-7, -3)
-        reason = f"Simulated sentiment evaluates to negative bearish drift ({score}) following earnings guidance worries and valuation concerns."
-    else:
-        score = random.randint(-2, 2)
-        reason = f"Simulated sentiment evaluates to neutral ({score}) as positive structural trends are balanced by broader market headwinds."
-        
-    digest = "Simulated Digest:\n" + "\n".join([f"- {i['title']}" for i in news_items[:3]])
-    
-    save_ai_run(symbol, digest, score, reason)
-    
+    digest = ("Headlines (AI unavailable, not analyzed):\n"
+              + "\n".join(f"- {i['title']}" for i in (news_items or [])[:5])) if news_items \
+        else "No news available."
     return {
-        "sentiment_score": score,
-        "reason": reason,
-        "digest": digest
+        "sentiment_score": 0,
+        "reason": "AI unavailable — neutral fallback (no influence on trading).",
+        "digest": digest,
     }
 
 if __name__ == "__main__":

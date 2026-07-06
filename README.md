@@ -1,173 +1,109 @@
-# Sentix | AI-Powered Algorithmic Trading & Sentiment Analysis Platform
+# Sentix v2 | AI-Assisted Algorithmic Swing-Trading Platform
 
-Sentix is a modular, production-ready, and Docker-compatible algorithmic trading and news sentiment analysis platform. It combines deterministic technical indicator math with state-of-the-art Generative AI (Google Gemini API) to confirm trading decisions.
+Sentix is a modular, Docker-ready **paper-trading** platform for US stocks, ETFs and crypto. Version 2 is a ground-up rebuild of the trading engine around three principles:
 
-To maximize operational cost-efficiency, the platform utilizes a **decoupled SQLite data architecture** and **conditional AI triggering**, ensuring that the Google Gemini API is only invoked when potential technical crossover triggers are met on historical charts.
+1. **Trade only with the trend** — multi-timeframe regime gates keep the bot out of downtrends and bear markets.
+2. **Risk is a number, not a vibe** — every position is sized so a stop-out loses a fixed, small percentage of the portfolio (ATR-based stops, true risk-based sizing).
+3. **Never trust a strategy you haven't backtested** — the built-in backtester runs the *exact same strategy code* as the live worker over historical data.
 
----
-
-## 🚀 Key Advanced Features
-
-### 1. Dual-Loop Background Worker (`worker.py`)
-The worker service operates using a dual-speed asynchronous architecture to ensure safety and precision:
-- **SL/TP Guardian Loop (Fast Loop - Default: 30s):** Queries real-time prices via CCXT ticker calls every 30 seconds. If an active position breaches its configured Stop-Loss or Take-Profit margin, the guardian immediately liquidates the position in paper trading.
-- **Market Analysis Scheduler Loop (Slow Loop - Default: 300s):** Runs every 5 minutes to fetch the latest completed 1-hour candle data, calculate technical indicators, evaluate crossover triggers, and trigger Gemini analysis when a signal is active.
-
-### 2. Multi-Factor Validation (Double-Check Math Filters)
-To filter out false breakouts and fake signals, the math engine implements a two-stage filter:
-- **4-Hour Timeframe Trend Filter:** When a 1-hour buy signal is triggered, it must be supported by a bullish trend on the 4-hour timeframe (Price > EMA 20 or MACD Golden Cross) to be approved.
-- **Volume Verification Filter:** The volume of the latest completed 1-hour candle must exceed the 20-period simple moving average of volume (Volume MA).
-
-### 3. Token-Efficient Batch AI Sentiment Engine (Gemini API)
-- **Modern Google GenAI SDK Support:** Integrates the latest `google-genai` library with full support for Gemini 3.5, 3.1 Flash Lite, 2.5 Pro, and newer models.
-- **Two-Step AI Processing & Vetos:**
-  - **Step 1 (Summarization):** Google News RSS articles (latest 5-10 items) are cleaned, de-noised, and synthesized into a comprehensive piyasa summary using `gemini-3.1-flash-lite` to minimize token overhead.
-  - **Step 2 (Structured Scoring):** The summary is evaluated by the advanced model in **JSON Mode** (enforced by Pydantic schemas) to produce a structured sentiment rating between -10 (extremely bearish/panic) and +10 (extremely bullish/FOMO).
-- **AI Veto Logic:** If technical indicators trigger a BUY but the AI sentiment is bearish (<= -2), the buy order is vetoed and cancelled. If indicators trigger a SELL but AI sentiment is extremely bullish (>= 3), the sell order is vetoed to let profits run.
-- **API Key Pool Rotation:** Loads a pool of Gemini API keys from `gemini_keys.txt`. If a key hits a `429 ResourceExhausted` (Rate Limit) error, the platform rotates to the next key automatically.
-- **Failsafe Offline Simulation:** In the absence of an API key or network connection, the platform automatically switches to an advanced simulation mode (scanning article descriptions for bullish/bearish keywords) to preserve complete dashboard functionality.
-- **Dynamic Position Sizing:** Based on how many confirmation factors are met (Base trigger, 4H Trend, Volume, Positive AI Sentiment), the position risk size is dynamically scaled between 25% and 100% of the target risk percentage.
-
-### 4. VPN Guardian (Location & Identity Protection)
-- The worker daemon communicates with the host Unix socket (`/var/run/docker.sock`) to monitor the status of the Gluetun VPN container (`sentix_vpn`).
-- If the VPN drops or the external IP address leaks, the bot **instantly halts all trading actions and SL/TP checks** in safe mode. It immediately alerts the user via Telegram, appending the latest VPN logs for error analysis.
-
-### 5. Interactive Telegram Bot Integration
-Manage and monitor your trading bot remotely:
-- **Instant Notifications:** Receives real-time alerts for executed buys, sells, SL/TP liquidations, and VPN state updates.
-- **Remote Controller Commands:** Supports authorized remote polling commands for querying system status, metrics, adjusting risk settings, and manual cycle execution.
-
-### 6. Dual-UI Dashboard Architecture
-Choose the dashboard that fits your use case:
-- **Streamlit Cyberpunk Panel (`ui/app.py`):** A password-protected, glassmorphic UI featuring Plotly subplots, custom CSS overrides, and a detailed step-by-step indicator checklist to inspect bot rules.
-- **FastAPI Backend (`api/main.py`) & Web UI (`frontend/`):** A lightweight SaaS-style dashboard written in vanilla HTML/CSS/JS that communicates asynchronously with the FastAPI REST API.
+> ⚠️ Sentix executes **paper trades only** (a simulated $10,000 portfolio). Nothing here is financial advice; backtest results do not guarantee future returns.
 
 ---
 
-## 📂 Directory Structure
+## What changed vs v1 (why v1 lost money)
+
+| v1 fault | v2 fix |
+|---|---|
+| RSI crossing *below* 30 triggered a BUY (buying falling knives) | Only upward momentum triggers: MACD cross-up, EMA20 reclaim, RSI *recovery* through 35 |
+| No trend filter — bought 1h signals inside daily downtrends | Daily regime gate (close > EMA200, EMA50 > EMA200) + benchmark filter (SPY/BTC > EMA200) |
+| "Risk %" was actually notional size (real risk ≈ 0.06 % NAV) | True sizing: `qty = (NAV × risk%) / (entry − stop)` |
+| Fixed 2 % stops ignored volatility | Stops = 2.5–3.5 × ATR(14), clamped, with breakeven + chandelier trailing |
+| Guardian & analysis threads raced on the portfolio (cash could vanish) | All fills are single SQLite transactions (`BEGIN IMMEDIATE`), tested under concurrency |
+| No exposure caps, circuit breaker or cooldowns | Max positions, per-position & total exposure caps, daily-loss circuit breaker, post-stop cooldown |
+| Traded 24/7 on stale night/weekend prices | Market-hours calendar + session-aware data-freshness guard (crypto stays 24/7) |
+| Random "simulated" sentiment & fake candles reached decisions | All synthetic fallbacks removed; no data ⇒ no trade |
+| No backtesting at all | Event-driven backtester + metrics + UI page, sharing the live strategy code |
+
+---
+
+## Strategy (long-only swing)
+
+**Entry — all gates must pass:**
+- Market open for the symbol & data fresh (session-aware; blocks holidays/dead feeds)
+- Daily uptrend: close > EMA200 **and** EMA50 > EMA200
+- Benchmark uptrend (SPY for equities, BTC-USD for crypto) — configurable
+- Trigger on the last **completed** 1h candle: MACD cross-up / EMA20 reclaim / RSI recovery
+- RSI(1h) between 35 and 68 (no knives, no chasing)
+- Confluence score ≥ threshold — factors: 4h trend (+15), volume expansion (+10), near support or bullish pattern (+10), AI sentiment (+15)
+- AI veto: Gemini sentiment ≤ −3 blocks the trade (AI optional; bot runs technical-only without a key)
+- Not in cooldown, circuit breaker clear, portfolio caps OK
+
+**Position sizing:** risk 1 % of NAV per trade (× 0.5–1.0 confidence multiplier), capped at 20 % NAV per position, 80 % total exposure, max 5 open positions.
+
+**Exit:**
+- Initial stop: entry − 2.5×ATR(14) (clamped 1.5–8 %)
+- Target: 2R; breakeven at +1R; chandelier trail (high-watermark − 2.5×ATR) after +1.5R
+- Regime break (daily close < EMA200) closes the position; optional time stop
+- Daily-loss circuit breaker: −3 % from day-start NAV halts new entries until the next session; a stop-out puts the symbol on a 24h cooldown
+
+---
+
+## Components
 
 ```
-sentix/
-├── core/
-│   ├── db.py                 # SQLite database schema, connections, and transactional helpers
-│   ├── data_fetcher.py       # ccxt candlestick puller and built-in RSS news scraper
-│   ├── math_engine.py        # Technical indicator calculations and crossover logic
-│   └── telegram_bot.py       # Telegram notification routing and remote command polling
-├── ai/
-│   └── sentiment_analyzer.py # Batch Gemini API client with rotation and simulation fallbacks
-├── ui/
-│   └── app.py                # Premium dark-mode Streamlit dashboard with custom CSS & Plotly
-├── api/
-│   └── main.py               # REST API endpoints serving data to the HTML frontend
-├── frontend/
-│   ├── index.html            # Modern HTML dashboard landing page
-│   ├── style.css             # Glassmorphic dark styling rules
-│   └── main.js               # JavaScript routing, REST sync, and TradingView layout
-├── worker.py                 # Core background loop coordinator (Dual-Loop Scheduler)
-├── Dockerfile                # Production Docker container definition
-├── docker-compose.yml        # Orchestrates worker, streamlit dashboard, and Gluetun VPN
-├── gemini_keys.txt.example   # Template for Gemini API key rotation pool
-├── requirements.txt          # Python library dependencies
-└── LICENSE                   # Personal Use License agreement (Commercial use prohibited)
+core/
+├── indicators.py    Pure indicator math (EMA/RSI/MACD/ATR, swings, patterns)
+├── strategy.py      Entry/exit evaluation — pure functions, fully unit-tested
+├── risk.py          Sizing, caps, market calendar, freshness guards
+├── accounting.py    Atomic fee-aware paper fills, NAV, circuit breaker
+├── backtest.py      Event-driven backtester (no lookahead, next-bar fills)
+├── data_fetcher.py  yfinance OHLCV (UTC) + Google News RSS
+├── db.py            SQLite schema, equity history, signals audit, cooldowns
+├── config.py        StrategyConfig — one dataclass for live AND backtest
+└── telegram_bot.py  Remote control & trade notifications
+ai/sentiment_analyzer.py  Batched Gemini news sentiment (optional)
+worker.py            Analysis loop (5 min) + SL/TP guardian loop (60 s)
+ui/app.py            Streamlit dashboard (TR/EN)
+api/main.py          FastAPI REST endpoints
 ```
+
+Run the tests any time: `python -m unittest core.test_strategy core.test_risk core.test_accounting core.test_backtest`
 
 ---
 
-## 🛠️ Local Setup & Execution
+## Quick start
 
-### 1. Prerequisite Environment
-Create your `.env` configuration file by copying the template:
 ```bash
-cp .env.example .env
-```
-Edit `.env` to supply your **Google Gemini API Key**, **Telegram Bot Token**, and **Chat ID**. If using key rotation, create a `gemini_keys.txt` file in the root directory and write one API key per line.
+cp .env.example .env          # add GEMINI_API_KEY / Telegram tokens if you want AI + alerts
+python -m venv .venv && .venv\Scripts\activate   # (Linux/macOS: source .venv/bin/activate)
+pip install -r requirements.txt
 
-### 2. Python Virtual Environment Setup
-Ensure you have Python 3.10+ installed:
-```bash
-# Create virtual environment
-python -m venv .venv
-
-# Activate (Windows)
-.venv\Scripts\activate
-# Activate (Linux / macOS)
-source .venv/bin/activate
-
-# Install dependencies
-    pip install -r requirements.txt
+python worker.py              # terminal 1: trading engine
+streamlit run ui/app.py       # terminal 2: dashboard at http://localhost:8501
 ```
 
-### 3. Running Locally
+Docker: `docker-compose up --build -d` (worker + UI; optional Gluetun VPN block in the compose file).
 
-#### Option A: Background Worker + Streamlit Dashboard
-1. **Launch the Background Worker & Telegram Bot Listener:**
-   ```bash
-   python worker.py
-   ```
-2. **Launch the Streamlit UI** (in a separate terminal):
-   ```bash
-   streamlit run ui/app.py
-   ```
-   Open your browser to `http://localhost:8501`.
-
-#### Option B: Background Worker + FastAPI Backend + Web UI
-1. **Launch the Background Worker:**
-   ```bash
-   python worker.py
-   ```
-2. **Launch the FastAPI Server:**
-   ```bash
-   uvicorn api.main:app --reload --port 8000
-   ```
-3. Open `frontend/index.html` in your web browser, or host it using any local HTTP static server. It will automatically connect to the FastAPI REST API at `http://localhost:8000/api`.
+**Watchlist** accepts any yfinance ticker: `AAPL`, `QQQ`, `BTC-USD`, `ETH-USD`… Crypto trades around the clock; equities trade NYSE regular hours only.
 
 ---
 
-## 🐳 Production Deployment with Docker
+## Dashboard
 
-The platform is designed to run in a fully self-contained Docker environment behind **Gluetun VPN** to hide the server's real IP address from exchanges.
+- **Portfolio** — NAV, equity curve, open positions with live PnL and stop distance, closed trades with R-multiples
+- **Signal Scanner** — per-symbol gate-by-gate checklist showing exactly why the bot did or didn't trade
+- **Charts** — candles with EMA/RSI/MACD panes and trade markers
+- **Backtest** — run the strategy over up to ~23 months of hourly data, compare with SPY buy-and-hold, inspect every simulated trade
+- **Settings** — watchlist, risk parameters, AI keys, bot start/stop
+- **Logs** — full event log + AI audit trail
 
-1. Configure your VPN provider credentials inside `.env` (ProtonVPN, NordVPN, etc., are supported).
-2. Start the full stack with a single command:
-   ```bash
-   docker-compose up --build -d
-   ```
-3. Monitor the system logs remotely:
-   ```bash
-   # View combined logs
-   docker-compose logs -f
-   
-   # View only AI trading worker logs
-   docker-compose logs -f worker
-   ```
+## Telegram commands
+
+`/portfolio` `/positions` `/trades` `/assets` `/ai_status` `/logs` `/trigger` `/pause` `/resume`
+`/risk 1.0` — set risk-per-trade (% NAV lost at stop) · `/sltp 2.5 2.0` — set ATR stop multiple & reward:risk ratio
 
 ---
 
-## 🤖 Telegram Bot Commands
+## License
 
-You can send the following commands to your bot via Telegram:
-
-- `/portfolio` - View current holdings, token allocation, and total Net Asset Value (NAV).
-- `/positions` - List all active spot positions, purchase prices, and real-time PnL.
-- `/trades` - Display the last 5 executed trades.
-- `/assets` - List all active trading pairs currently being scanned.
-- `/vpn` - Check VPN container connection status, external IP address, and proxies.
-- `/vpn_logs` - Fetch the last 25 lines of stdout/stderr logs from the `sentix_vpn` container.
-- `/ai_status` - Display latest active Gemini sentiment scores and reasons for selected assets.
-- `/logs` - Show the last 5 logs saved in the SQLite event logs table.
-- `/trigger` - Manually trigger an analysis cycle immediately in the background.
-- `/pause` - Pause the automatic trading scheduler (SL/TP guardians remain active for protection).
-- `/resume` - Resume the automatic trading scheduler.
-- `/risk [pct]` - Update the trade risk percentage based on total NAV (e.g., `/risk 2.5`).
-- `/sltp [sl] [tp]` - Update the Stop-Loss and Take-Profit ratios dynamically (e.g., `/sltp 3.0 6.0`).
-
----
-
-## 📄 License & Commercial Restrictions
-
-This software is licensed under the **Sentix Personal and Non-Commercial License Agreement (SPNCL-1.0)**.
-
-### Terms of Use:
-- **Individual/Personal Use:** You are permitted to execute, inspect, and modify the source code of this Software for private, individual, educational, and non-commercial research purposes.
-- **Commercial Restriction:** Any commercial use, redistribution, or commercialization of the Software or its derivatives is strictly prohibited. You may NOT host the software as a paid service (SaaS), manage funds for clients using this software, or rebrand and republish it as your own commercial product.
-- For full legal terms, please review the [LICENSE](https://github.com/technomonkey-7/sentix/blob/main/LICENSE) file in the root directory.
+**Sentix Personal and Non-Commercial License (SPNCL-1.0)** — personal, educational and research use only; commercial use, paid hosting and fund management are prohibited. See [LICENSE](LICENSE).

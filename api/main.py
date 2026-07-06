@@ -3,14 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 import sys
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
 
 # Dynamic project root resolver
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.db import (
-    get_portfolio, get_all_active_positions, get_logs, 
-    get_latest_ai_run, get_config, save_config, get_trades, get_latest_candles
+    get_portfolio, get_all_active_positions, get_logs,
+    get_latest_ai_run, get_config, save_config, get_trades, get_latest_candles,
+    get_equity_history, get_latest_signals
 )
 from worker import run_worker_cycle
 
@@ -61,11 +61,24 @@ def get_config_api(key: str):
 @app.get("/api/config")
 def get_all_config():
     # Helper to get all basic configs needed for frontend display
-    keys = ["risk_percentage", "stop_loss_pct", "take_profit_pct", "min_ai_sentiment_threshold", "selected_assets", "summarizer_model", "sentiment_model"]
+    keys = [
+        "risk_per_trade_pct", "atr_mult_sl", "rr_ratio", "max_open_positions",
+        "max_position_pct", "max_total_exposure_pct", "daily_loss_limit_pct",
+        "cooldown_hours", "market_filter_enabled", "ai_enabled",
+        "min_ai_sentiment_threshold", "selected_assets", "summarizer_model", "sentiment_model",
+    ]
     res = {}
     for k in keys:
         res[k] = get_config(k)
     return res
+
+@app.get("/api/equity")
+def get_equity_api(limit: int = 2000):
+    return {"equity": get_equity_history(limit)}
+
+@app.get("/api/signals")
+def get_signals_api():
+    return {"signals": get_latest_signals()}
 
 @app.post("/api/config")
 def update_config_api(config: ConfigUpdate):
