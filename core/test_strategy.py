@@ -169,7 +169,8 @@ class TestEvaluateEntry(unittest.TestCase):
 
 class TestExitsAndTrailing(unittest.TestCase):
     def setUp(self):
-        self.cfg = StrategyConfig()
+        # rr_ratio pinned to 2.0: these fixtures assume R = (tp-entry)/2
+        self.cfg = StrategyConfig(rr_ratio=2.0)
 
     def test_regime_break_exit(self):
         sig = evaluate_exit({"timestamp": "2026-06-01T00:00:00+00:00"},

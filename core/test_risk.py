@@ -95,7 +95,7 @@ class TestSizing(unittest.TestCase):
         self.assertFalse(r.ok)
 
     def test_clamp_stop_bounds(self):
-        cfg = self.cfg
+        cfg = StrategyConfig(sl_min_pct=1.5, sl_max_pct=8.0)
         # too tight (0.5%) -> widened to 1.5%
         self.assertAlmostEqual(clamp_stop(100.0, 99.5, cfg), 98.5)
         # too wide (12%) -> tightened to 8%

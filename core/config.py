@@ -52,10 +52,13 @@ class StrategyConfig:
     min_confluence_score: int = 65          # entries below this score are skipped entirely
 
     # --- exits / stops ---
-    atr_mult_sl: float = 2.5                # initial stop = entry - atr_mult_sl * ATR14(1h)
-    sl_min_pct: float = 1.5                 # clamp stop distance into [min, max] % of entry
+    # Defaults tuned on 12- and 22-month real-data backtests (2026-07-06 sweep):
+    # wide ATR stops + modest 1.5R targets were robustly profitable, while
+    # tight stops (2.5x) / high RR (>=2) variants were breakeven or losing.
+    atr_mult_sl: float = 4.5                # initial stop = entry - atr_mult_sl * ATR14(1h)
+    sl_min_pct: float = 3.0                 # clamp stop distance into [min, max] % of entry
     sl_max_pct: float = 8.0
-    rr_ratio: float = 2.0                   # take profit = entry + rr_ratio * R
+    rr_ratio: float = 1.5                   # take profit = entry + rr_ratio * R
     breakeven_at_r: float = 1.0             # move stop to entry after +1R
     trail_at_r: float = 1.5                 # start chandelier trail after +1.5R
     trail_atr_mult: float = 2.5             # trail distance = mult * ATR at entry

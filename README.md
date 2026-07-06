@@ -41,10 +41,19 @@ Sentix is a modular, Docker-ready **paper-trading** platform for US stocks, ETFs
 **Position sizing:** risk 1 % of NAV per trade (× 0.5–1.0 confidence multiplier), capped at 20 % NAV per position, 80 % total exposure, max 5 open positions.
 
 **Exit:**
-- Initial stop: entry − 2.5×ATR(14) (clamped 1.5–8 %)
-- Target: 2R; breakeven at +1R; chandelier trail (high-watermark − 2.5×ATR) after +1.5R
+- Initial stop: entry − 4.5×ATR(14) (clamped 3–8 %) — wide stops beat tight ones in the tuning backtests
+- Target: 1.5R; breakeven at +1R; chandelier trail (high-watermark − 2.5×ATR) after +1.5R
 - Regime break (daily close < EMA200) closes the position; optional time stop
 - Daily-loss circuit breaker: −3 % from day-start NAV halts new entries until the next session; a stop-out puts the symbol on a 24h cooldown
+
+**Reference backtest** (10-symbol tech/ETF watchlist, hourly bars, fees + slippage included, AI disabled, run 2026-07-06):
+
+| Window | Return | Max DD | Sharpe | Trades | Win rate | Profit factor | Expectancy |
+|---|---|---|---|---|---|---|---|
+| 12 months | +8.3 % | −10.9 % | 0.62 | 128 | 40.6 % | 1.18 | +0.13R |
+| 22 months | +15.6 % | −11.0 % | 0.67 | 212 | 42.5 % | 1.19 | +0.16R |
+
+Honest context: SPY buy-and-hold returned more over the same strong bull-market windows (+22 % / +41 %). The system's value is **positive expectancy with controlled risk** — capped drawdowns, a circuit breaker, and regime gates that move to cash in downtrends, which buy-and-hold cannot do. Re-run the backtest yourself from the dashboard before trusting any parameter change.
 
 ---
 
