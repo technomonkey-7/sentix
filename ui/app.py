@@ -864,6 +864,8 @@ def render_settings_tab(cfg: StrategyConfig):
                                    key="settings_risk_per_trade")
         max_open = st.slider(t("max_open_positions"), 1, 10, int(cfg.max_open_positions), 1,
                              key="settings_max_open")
+        max_per_sector = st.slider(t("max_per_sector"), 1, 5, int(cfg.max_per_sector), 1,
+                                   help=t("max_per_sector_help"), key="settings_max_per_sector")
         max_pos_pct = st.slider(t("max_position_pct"), 5.0, 50.0, float(cfg.max_position_pct), 1.0,
                                 key="settings_max_pos_pct")
         max_exposure = st.slider(t("max_total_exposure_pct"), 20.0, 100.0, float(cfg.max_total_exposure_pct), 5.0,
@@ -875,6 +877,7 @@ def render_settings_tab(cfg: StrategyConfig):
         if st.button(t("save_button"), key="save_risk"):
             save_config("risk_per_trade_pct", risk_per_trade)
             save_config("max_open_positions", max_open)
+            save_config("max_per_sector", max_per_sector)
             save_config("max_position_pct", max_pos_pct)
             save_config("max_total_exposure_pct", max_exposure)
             save_config("daily_loss_limit_pct", daily_loss)

@@ -101,7 +101,7 @@ streamlit run ui/app.py       # terminal 2: dashboard at http://localhost:8501
 
 Docker: `docker-compose up --build -d` (worker + UI; optional Gluetun VPN block in the compose file).
 
-**Watchlist** accepts any yfinance ticker: `AAPL`, `QQQ`, `BTC-USD`, `ETH-USD`… Crypto trades around the clock; equities trade NYSE regular hours only.
+**Watchlist** accepts any yfinance ticker: `AAPL`, `QQQ`, `BTC-USD`, `ETH-USD`… Crypto trades around the clock; equities trade NYSE regular hours only. The default watchlist is **diversified across seven sectors** (tech, financials, healthcare, energy, staples, industrials, gold + SPY), and a **sector cap** (max 2 open positions per sector, configurable) guarantees a single-industry crash can never hit the whole portfolio at once.
 
 ---
 

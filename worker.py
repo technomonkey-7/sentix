@@ -22,7 +22,7 @@ from core.db import (
     get_active_position, get_all_active_positions, get_cooldown,
     record_equity_snapshot, save_signal, update_trade_fields,
 )
-from core.config import StrategyConfig
+from core.config import StrategyConfig, sector_of
 from core.data_fetcher import fetch_ohlcv, fetch_asset_news, fetch_realtime_price, resample_4h
 from core.indicators import add_indicators
 from core import strategy, risk as riskmod, accounting
@@ -198,6 +198,15 @@ def _execute_cycle_logic(force=False):
             op_gates.append(strategy.GateCheck("cooldown", cooldown_until is None,
                                                f"Cooling down until {cooldown_until}" if cooldown_until else "No cooldown"))
             op_gates.append(strategy.GateCheck("circuit_breaker", not cb_active, cb_detail))
+
+            # sector concentration cap: never stack the portfolio into one industry
+            sector = sector_of(symbol)
+            open_in_sector = sum(1 for p in get_all_active_positions()
+                                 if sector_of(p["asset"]) == sector)
+            sector_ok = open_in_sector < cfg.max_per_sector
+            op_gates.append(strategy.GateCheck(
+                "sector_cap", sector_ok,
+                f"{open_in_sector}/{cfg.max_per_sector} open positions in '{sector}'"))
 
             already_analyzed = (not force and analyzed.get(symbol) == completed_ts)
 
@@ -393,6 +402,7 @@ def _init_default_config():
         "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
         "risk_per_trade_pct": "1.0",
         "max_open_positions": "5",
+        "max_per_sector": "2",
         "max_position_pct": "20.0",
         "max_total_exposure_pct": "80.0",
         "daily_loss_limit_pct": "3.0",

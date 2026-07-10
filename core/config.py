@@ -6,10 +6,52 @@ parameter set as the live bot (or any experimental variation).
 import os
 from dataclasses import dataclass, field, asdict
 
+# Diversified default: mega-cap tech kept, but balanced with healthcare,
+# financials, energy, staples, industrials and gold so a single-sector
+# selloff can't hit every position at once.
 DEFAULT_WATCHLIST = [
-    "AAPL", "MSFT", "NVDA", "AMD", "TSM", "AVGO", "ASML",
-    "AMZN", "GOOGL", "META", "TSLA", "QQQ", "SPY",
+    # tech / communication
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META",
+    # financials
+    "JPM", "V",
+    # healthcare
+    "LLY", "JNJ",
+    # energy
+    "XOM",
+    # consumer staples / retail
+    "PG", "WMT",
+    # industrials
+    "CAT",
+    # gold (low correlation to equities)
+    "GLD",
+    # broad market
+    "SPY",
 ]
+
+# Sector buckets for the exposure cap. Unknown symbols fall into "other"
+# (crypto maps to its own bucket via the -USD suffix).
+SECTOR_MAP = {
+    "AAPL": "tech", "MSFT": "tech", "NVDA": "tech", "AMD": "tech",
+    "TSM": "tech", "AVGO": "tech", "ASML": "tech", "AMZN": "tech",
+    "GOOGL": "tech", "META": "tech", "TSLA": "tech", "QQQ": "tech",
+    "JPM": "financials", "V": "financials", "BRK-B": "financials",
+    "GS": "financials", "MS": "financials", "BAC": "financials",
+    "LLY": "healthcare", "JNJ": "healthcare", "UNH": "healthcare",
+    "PFE": "healthcare", "MRK": "healthcare", "ABBV": "healthcare",
+    "XOM": "energy", "CVX": "energy", "COP": "energy",
+    "PG": "staples", "WMT": "staples", "KO": "staples",
+    "PEP": "staples", "COST": "staples",
+    "CAT": "industrials", "GE": "industrials", "HON": "industrials",
+    "GLD": "gold", "IAU": "gold",
+    "SPY": "index", "DIA": "index", "IWM": "index", "VOO": "index",
+}
+
+
+def sector_of(symbol: str) -> str:
+    """Sector bucket for the per-sector position cap."""
+    if symbol.upper().endswith(CRYPTO_SUFFIX):
+        return "crypto"
+    return SECTOR_MAP.get(symbol.upper(), "other")
 
 # yfinance crypto tickers trade 24/7 and use the -USD suffix
 CRYPTO_SUFFIX = "-USD"
@@ -94,6 +136,7 @@ class StrategyConfig:
     max_position_pct: float = 20.0          # max notional per position as % of NAV
     max_total_exposure_pct: float = 80.0    # max invested notional as % of NAV
     max_open_positions: int = 5
+    max_per_sector: int = 2                 # open positions allowed per sector bucket
     daily_loss_limit_pct: float = 3.0       # circuit breaker threshold from day-start NAV
     cooldown_hours: float = 24.0            # per-symbol lockout after a stop-loss exit
     min_notional_usd: float = 100.0
@@ -148,6 +191,7 @@ class StrategyConfig:
         c.max_position_pct = cfg("max_position_pct", c.max_position_pct)
         c.max_total_exposure_pct = cfg("max_total_exposure_pct", c.max_total_exposure_pct)
         c.max_open_positions = int(cfg("max_open_positions", c.max_open_positions))
+        c.max_per_sector = int(cfg("max_per_sector", c.max_per_sector))
         c.daily_loss_limit_pct = cfg("daily_loss_limit_pct", c.daily_loss_limit_pct)
         c.cooldown_hours = cfg("cooldown_hours", c.cooldown_hours)
         c.fee_pct = cfg("fee_pct", c.fee_pct)

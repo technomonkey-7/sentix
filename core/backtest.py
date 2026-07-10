@@ -14,7 +14,7 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
-from core.config import StrategyConfig
+from core.config import StrategyConfig, sector_of
 from core.data_fetcher import fetch_ohlcv, resample_4h
 from core.indicators import add_indicators
 from core import risk as riskmod
@@ -244,6 +244,12 @@ def run_backtest(symbols: list[str], cfg: StrategyConfig, initial_cash: float = 
             if cd is not None and pd.Timestamp(ts) < cd:
                 continue
             if len(positions) + len(pending) >= cfg.max_open_positions:
+                continue
+            # sector concentration cap (mirrors the live worker gate)
+            sector = sector_of(sym)
+            held_in_sector = sum(1 for s in list(positions) + list(pending)
+                                 if sector_of(s) == sector)
+            if held_in_sector >= cfg.max_per_sector:
                 continue
 
             window_start = max(0, idx - 250)

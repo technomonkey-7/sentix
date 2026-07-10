@@ -81,6 +81,23 @@ class TestBacktest(unittest.TestCase):
         sliced = backtest._completed_daily(df, ts)
         self.assertTrue((sliced["timestamp"] < ts.normalize()).all())
 
+    def test_sector_cap_limits_concurrent_positions(self):
+        # AAPL/MSFT/NVDA are all 'tech'; with max_per_sector=1 no two tech
+        # positions may ever be open at the same time
+        cfg = StrategyConfig(max_per_sector=1)
+        result = run_backtest(["AAPL", "MSFT", "NVDA"], cfg, initial_cash=10000.0, months=2)
+        df = trades_to_frame(result.trades)
+        if df.empty:
+            self.skipTest("no trades generated on this synthetic seed")
+        intervals = list(zip(df["entry_time"], df["exit_time"]))
+        for i in range(len(intervals)):
+            for j in range(i + 1, len(intervals)):
+                a_start, a_end = intervals[i]
+                b_start, b_end = intervals[j]
+                overlap = max(a_start, b_start) < min(a_end, b_end)
+                self.assertFalse(overlap,
+                                 f"two tech positions overlapped: {intervals[i]} vs {intervals[j]}")
+
     def test_cash_never_negative(self):
         result = run_backtest(["SYNA", "SYNB"], self.cfg, initial_cash=10000.0, months=2)
         # NAV can dip but equity must never go below zero (long-only, no leverage)

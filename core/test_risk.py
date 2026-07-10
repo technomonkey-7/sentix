@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 
-from core.config import StrategyConfig, normalize_symbol, parse_watchlist
+from core.config import StrategyConfig, normalize_symbol, parse_watchlist, sector_of
 from core.risk import (
     clamp_stop, compute_position_size, data_is_fresh, is_crypto,
     is_market_open, market_minutes_elapsed, next_session_start,
@@ -114,6 +114,18 @@ class TestSymbols(unittest.TestCase):
     def test_parse_watchlist_dedup(self):
         out = parse_watchlist("AAPL/USD, AAPL, MSFT")
         self.assertEqual(out, ["AAPL", "MSFT"])
+
+    def test_sector_buckets(self):
+        self.assertEqual(sector_of("NVDA"), "tech")
+        self.assertEqual(sector_of("JPM"), "financials")
+        self.assertEqual(sector_of("XOM"), "energy")
+        self.assertEqual(sector_of("GLD"), "gold")
+        self.assertEqual(sector_of("BTC-USD"), "crypto")
+        self.assertEqual(sector_of("SOMEUNKNOWN"), "other")
+        # default watchlist must span at least 6 distinct sectors
+        from core.config import DEFAULT_WATCHLIST
+        sectors = {sector_of(s) for s in DEFAULT_WATCHLIST}
+        self.assertGreaterEqual(len(sectors), 6, sectors)
 
 
 if __name__ == "__main__":
