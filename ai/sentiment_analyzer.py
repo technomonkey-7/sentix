@@ -102,10 +102,27 @@ def rotate_key():
         return True
     return False
 
+_ROTATE_MARKERS = (
+    "429", "resourceexhausted", "resource_exhausted", "quota",
+    "rate limit", "api key not valid", "api_key_invalid",
+    "permission_denied", "permissiondenied", "403", "expired",
+)
+
+
+def _should_rotate(e: Exception) -> bool:
+    """True for errors that a DIFFERENT key could fix: quota/rate limits,
+    invalid/expired keys, permission problems. Model errors, bad requests
+    and network failures re-raise immediately — a new key won't help."""
+    if isinstance(e, APIError) and e.code in (429, 403, 401):
+        return True
+    text = str(e).lower()
+    return any(marker in text for marker in _ROTATE_MARKERS)
+
+
 def call_gemini_with_retry(func, *args, **kwargs):
-    """
-    Calls a function with a Gemini client. Retries with key rotation if 429 occurs.
-    """
+    """Calls a function with a Gemini client. On quota / invalid-key /
+    permission errors it rotates to the next key in gemini_keys.txt and
+    retries; each key in the pool gets one chance per call."""
     global _api_keys
     if _api_keys is None:
         _api_keys = load_api_keys()
@@ -122,28 +139,23 @@ def call_gemini_with_retry(func, *args, **kwargs):
         try:
             return func(client, *args, **kwargs)
         except Exception as e:
-            is_rate_limit = False
-            if isinstance(e, APIError):
-                if e.code == 429 or "429" in str(e) or "ResourceExhausted" in str(e):
-                    is_rate_limit = True
-            elif "429" in str(e) or "ResourceExhausted" in str(e):
-                is_rate_limit = True
-
-            if is_rate_limit:
-                log_event("WARNING", "AI_MODULE", f"Rate limit (429) hit on Gemini client '{key_name}'.")
+            if _should_rotate(e):
+                log_event("WARNING", "AI_MODULE",
+                          f"Key-related error on Gemini client '{key_name}': {e}")
                 rotated = rotate_key()
                 if not rotated:
                     # Only one key is available. Wait and retry once.
                     if attempt == 0:
-                        log_event("INFO", "AI_MODULE", "Only one API key configured. Waiting 10 seconds before retry...")
+                        log_event("INFO", "AI_MODULE",
+                                  "Only one API key configured. Waiting 10 seconds before retry...")
                         time.sleep(10)
+                        last_error = e
                         continue
-                    else:
-                        raise e
-                else:
-                    # Key rotated. Wait a brief duration before retrying.
-                    log_event("INFO", "AI_MODULE", "Sleeping 2 seconds before retrying with rotated API key...")
-                    time.sleep(2)
+                    raise e
+                # Key rotated. Wait a brief duration before retrying.
+                log_event("INFO", "AI_MODULE",
+                          f"Retrying with next key ({get_current_key_name()}) in 2 seconds...")
+                time.sleep(2)
                 last_error = e
             else:
                 log_event("ERROR", "AI_MODULE", f"Gemini API call failed with error: {e}")
@@ -151,6 +163,21 @@ def call_gemini_with_retry(func, *args, **kwargs):
     if last_error:
         raise last_error
     raise RuntimeError("Gemini API call retry loop ended without result.")
+
+
+def get_key_pool_status():
+    """Which key source is active and how many keys are available.
+    Used by the Settings UI. Note: the rotation index is per-process."""
+    global _api_keys, _current_key_idx
+    if _api_keys is None:
+        _api_keys = load_api_keys()
+    if _api_keys:
+        return {"source": "pool", "count": len(_api_keys), "active_index": _current_key_idx + 1}
+    if (get_config("gemini_api_key") or "").strip():
+        return {"source": "config", "count": 1, "active_index": 1}
+    if (os.getenv("GEMINI_API_KEY") or "").strip():
+        return {"source": "env", "count": 1, "active_index": 1}
+    return {"source": "none", "count": 0, "active_index": 0}
 
 def analyze_sentiment_batch(candidates: List[Dict[str, Any]], sentiment_model_override=None) -> List[Dict[str, Any]]:
     """

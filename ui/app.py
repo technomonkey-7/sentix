@@ -915,8 +915,23 @@ def render_settings_tab(cfg: StrategyConfig):
 
     with st.expander(t("exp_ai")):
         ai_enabled = st.checkbox(t("ai_enabled"), value=cfg.ai_enabled, key="settings_ai_enabled")
-        existing_key = get_config("gemini_api_key") or ""
-        st.caption(t("gemini_api_key_set") if existing_key else t("gemini_api_key_missing"))
+
+        # active key source: gemini_keys.txt pool > this settings key > .env
+        try:
+            from ai.sentiment_analyzer import get_key_pool_status
+            ks = get_key_pool_status()
+            if ks["source"] == "pool":
+                st.success(t("key_source_pool", count=ks["count"]))
+            elif ks["source"] == "config":
+                st.info(t("key_source_config"))
+            elif ks["source"] == "env":
+                st.info(t("key_source_env"))
+            else:
+                st.error(t("key_source_none"))
+            st.caption(t("key_pool_hint"))
+        except Exception:
+            existing_key = get_config("gemini_api_key") or ""
+            st.caption(t("gemini_api_key_set") if existing_key else t("gemini_api_key_missing"))
         new_key = st.text_input(t("gemini_api_key"), value="", type="password", key="settings_gemini_key")
         summarizer_model = st.text_input(t("summarizer_model"),
                                          value=get_config("summarizer_model", "gemini-3.1-flash-lite"),
@@ -959,26 +974,82 @@ def render_settings_tab(cfg: StrategyConfig):
     st.subheader(t("danger_zone_title"))
     st.warning(t("reset_desc"))
     confirm = st.checkbox(t("reset_confirm_checkbox"), key="reset_confirm")
-    if st.button(t("reset_button"), type="primary", key="reset_button"):
-        if not confirm:
-            st.warning(t("reset_need_confirm"))
-        else:
-            try:
-                conn = get_connection()
-                cur = conn.cursor()
-                for table in ("trades", "candles", "logs", "equity_history", "signals", "cooldowns"):
-                    cur.execute(f"DELETE FROM {table}")
-                cur.execute("UPDATE portfolio SET balance = 10000, avg_entry_price = 0 WHERE asset = 'USD'")
-                cur.execute("DELETE FROM portfolio WHERE asset != 'USD'")
-                conn.commit()
-                conn.close()
-                st.session_state.bt_result = None
-                st.session_state.bt_params = None
-                log_event("WARNING", "UI", "Portfolio reset from dashboard.")
-                st.success(t("reset_success"))
-                st.rerun()
-            except Exception as e:
-                st.error(t("loading_error", error=str(e)))
+
+    col_p, col_s, col_f = st.columns(3)
+    with col_p:
+        st.caption(t("reset_portfolio_desc"))
+        if st.button(t("reset_button"), type="primary", key="reset_button"):
+            if not confirm:
+                st.warning(t("reset_need_confirm"))
+            else:
+                try:
+                    _reset_portfolio()
+                    log_event("WARNING", "UI", "Portfolio reset from dashboard.")
+                    st.success(t("reset_success"))
+                    st.rerun()
+                except Exception as e:
+                    st.error(t("loading_error", error=str(e)))
+    with col_s:
+        st.caption(t("reset_settings_desc"))
+        if st.button(t("reset_settings_button"), type="primary", key="reset_settings_button"):
+            if not confirm:
+                st.warning(t("reset_need_confirm"))
+            else:
+                try:
+                    _reset_settings()
+                    log_event("WARNING", "UI", "All bot settings reset to defaults from dashboard.")
+                    st.success(t("reset_settings_success"))
+                    st.rerun()
+                except Exception as e:
+                    st.error(t("loading_error", error=str(e)))
+    with col_f:
+        st.caption(t("reset_factory_desc"))
+        if st.button(t("reset_factory_button"), type="primary", key="reset_factory_button"):
+            if not confirm:
+                st.warning(t("reset_need_confirm"))
+            else:
+                try:
+                    _reset_portfolio()
+                    _reset_settings()
+                    log_event("WARNING", "UI", "FACTORY RESET: portfolio and all settings wiped from dashboard.")
+                    st.success(t("reset_factory_success"))
+                    st.rerun()
+                except Exception as e:
+                    st.error(t("loading_error", error=str(e)))
+
+
+def _reset_portfolio():
+    """Wipes trading history and restores the $10,000 paper balance."""
+    conn = get_connection()
+    cur = conn.cursor()
+    for table in ("trades", "candles", "logs", "equity_history", "signals", "cooldowns"):
+        cur.execute(f"DELETE FROM {table}")
+    cur.execute("UPDATE portfolio SET balance = 10000, avg_entry_price = 0 WHERE asset = 'USD'")
+    cur.execute("DELETE FROM portfolio WHERE asset != 'USD'")
+    conn.commit()
+    conn.close()
+    st.session_state.bt_result = None
+    st.session_state.bt_params = None
+
+
+def _reset_settings():
+    """Restores every bot setting to factory defaults. The Gemini API key is
+    preserved (it is a credential, not a setting) and the bot is left STOPPED
+    so the user restarts it consciously with the fresh configuration."""
+    api_key = get_config("gemini_api_key") or ""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM config")
+    conn.commit()
+    conn.close()
+
+    from worker import _init_default_config
+    _init_default_config()
+
+    if api_key.strip():
+        save_config("gemini_api_key", api_key)
+    save_config("bot_running", "false")
+    st.cache_data.clear()
 
 
 # =========================================================================

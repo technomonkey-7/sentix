@@ -244,6 +244,20 @@ T = {
         "reset_confirm_checkbox": "Anladım, portföyü sıfırlamak istiyorum.",
         "reset_button": "🔄 Portföyü Sıfırla",
         "reset_success": "✅ Portföy sıfırlandı.",
+        "reset_portfolio_desc": "İşlem geçmişini siler, sanal bakiyeyi $10.000'a döndürür. Ayarlara dokunmaz.",
+        "reset_settings_button": "⚙️ Bot Ayarlarını Sıfırla",
+        "reset_settings_desc": "Tüm strateji/risk/AI ayarlarını fabrika değerlerine döndürür. Portföye dokunmaz; API anahtarı korunur. Bot güvenlik için DURDURULMUŞ olarak bırakılır.",
+        "reset_settings_success": "✅ Tüm ayarlar fabrika değerlerine döndü. API anahtarınız korundu; botu yeniden başlatmayı unutmayın.",
+        "reset_factory_button": "🏭 Fabrika Sıfırlaması (Her Şey)",
+        "reset_factory_desc": "Portföy + tüm ayarlar birlikte sıfırlanır. Tamamen temiz bir başlangıç.",
+        "reset_factory_success": "✅ Fabrika sıfırlaması tamamlandı. Bot durduruldu — ayarları kontrol edip yeniden başlatın.",
+
+        # ---- Gemini key source ----
+        "key_source_pool": "🔑 Anahtar havuzu aktif: gemini_keys.txt içinde {count} anahtar (kota/hata durumunda otomatik rotasyon).",
+        "key_source_config": "🔑 Tek anahtar kullanılıyor (buradaki Ayarlar'dan kaydedilen). Rotasyon yok.",
+        "key_source_env": "🔑 Tek anahtar kullanılıyor (.env dosyasındaki GEMINI_API_KEY). Rotasyon yok.",
+        "key_source_none": "❌ Hiçbir Gemini API anahtarı bulunamadı. AI analizi çalışmayacak.",
+        "key_pool_hint": "💡 Rotasyon için proje klasörüne gemini_keys.txt oluşturup her satıra bir anahtar yazın (öncelik sırası: gemini_keys.txt > buradaki anahtar > .env). Kota, geçersiz anahtar veya yetki hatasında otomatik olarak sonraki anahtara geçilir.",
         "reset_need_confirm": "⚠️ Önce onay kutusunu işaretleyin.",
 
         # ---- logs tab ----
@@ -505,6 +519,20 @@ T = {
         "reset_confirm_checkbox": "I understand, reset the portfolio.",
         "reset_button": "🔄 Reset Portfolio",
         "reset_success": "✅ Portfolio reset.",
+        "reset_portfolio_desc": "Deletes trade history and restores the $10,000 paper balance. Settings untouched.",
+        "reset_settings_button": "⚙️ Reset Bot Settings",
+        "reset_settings_desc": "Restores all strategy/risk/AI settings to factory defaults. Portfolio untouched; API key preserved. The bot is left STOPPED for safety.",
+        "reset_settings_success": "✅ All settings restored to factory defaults. Your API key was preserved; remember to restart the bot.",
+        "reset_factory_button": "🏭 Factory Reset (Everything)",
+        "reset_factory_desc": "Portfolio + all settings reset together. A completely clean start.",
+        "reset_factory_success": "✅ Factory reset complete. Bot stopped — review settings and restart.",
+
+        # ---- Gemini key source ----
+        "key_source_pool": "🔑 Key pool active: {count} keys in gemini_keys.txt (auto-rotation on quota/errors).",
+        "key_source_config": "🔑 Using a single key (saved in these Settings). No rotation.",
+        "key_source_env": "🔑 Using a single key (GEMINI_API_KEY from .env). No rotation.",
+        "key_source_none": "❌ No Gemini API key found. AI analysis will not work.",
+        "key_pool_hint": "💡 For rotation, create gemini_keys.txt in the project folder with one key per line (priority: gemini_keys.txt > the key here > .env). On quota, invalid-key or permission errors the next key is used automatically.",
         "reset_need_confirm": "⚠️ Please check the confirmation box first.",
 
         # ---- logs tab ----
