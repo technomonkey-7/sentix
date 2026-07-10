@@ -38,7 +38,15 @@ Sentix is a modular, Docker-ready **paper-trading** platform for US stocks, ETFs
 - AI veto: Gemini sentiment ≤ −3 blocks the trade (AI optional; bot runs technical-only without a key)
 - Not in cooldown, circuit breaker clear, portfolio caps OK
 
-**Position sizing:** risk 1 % of NAV per trade (× 0.5–1.0 confidence multiplier), capped at 20 % NAV per position, 80 % total exposure, max 5 open positions.
+**Position sizing:** risk a fixed % of NAV per trade (× 0.5–1.0 confidence multiplier), capped per position and in total. Three one-click **risk profiles** in Settings share identical quality filters and differ only in risk appetite:
+
+| Profile | Risk/trade | Max positions | Max invested | Daily brake |
+|---|---|---|---|---|
+| 🛡️ Conservative | 0.75 % | 4 | 60 % | −2 % |
+| ⚖️ Balanced | 1 % | 5 | 80 % | −3 % |
+| 🚀 Aggressive (high reward) | 1.5 % | 5 | 80 % | −4.5 % |
+
+The aggressive numbers are the **tested optimum**, not the slider maximum: sweeps showed that 2–3 % risk with 95–100 % exposure *lowered* returns while deepening drawdowns (volatility drag plus correlated stop-outs on a tech-heavy watchlist).
 
 **Exit:**
 - Initial stop: entry − 4.5×ATR(14) (clamped 3–8 %) — wide stops beat tight ones in the tuning backtests
@@ -98,6 +106,8 @@ Docker: `docker-compose up --build -d` (worker + UI; optional Gluetun VPN block 
 ---
 
 ## Dashboard
+
+Navigation renders **one page per run** (no hidden background fetches), and all network calls sit behind TTL caches — news refreshes at most every 15 minutes, chart data every 2 minutes, regardless of the auto-refresh interval.
 
 - **Portfolio** — NAV, equity curve, open positions with live PnL and stop distance, closed trades with R-multiples
 - **Signal Scanner** — per-symbol gate-by-gate checklist showing exactly why the bot did or didn't trade

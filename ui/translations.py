@@ -12,6 +12,34 @@ T = {
         "app_title": "Sentix",
         "app_tagline": "Yapay Zeka Destekli Algoritmik Kağıt Üzerinde Trading",
         "lang_label": "🌐 Dil",
+        "nav_title": "📑 Sayfalar",
+
+        # ---- live mode ----
+        "live_mode_badge_on": "CANLI MOD AKTİF",
+        "live_mode_badge_off": "Test Modu (esnek veri)",
+        "live_mode_label": "Canlı Mod (sıkı gerçek-veri modu)",
+        "live_mode_help": "Aktifken sistem yalnızca doğrulanmış gerçek verilerle çalışır: AI çağrısı başarısız olursa hata verir, hiçbir yedek/simüle değer kullanılmaz. Gerçekçi test için önerilir.",
+
+        # ---- manual AI analysis ----
+        "ai_analyze_btn": "🤖 Şimdi AI ile Analiz Et",
+        "ai_analyze_running": "Haberler toplanıyor ve Gemini ile analiz ediliyor...",
+        "ai_analyze_done": "✅ AI analizi tamamlandı. Duygu skoru: {score}",
+        "ai_analyze_no_key": "Gemini API anahtarı bulunamadı. Ayarlar → AI bölümünden ekleyin.",
+        "ai_analyze_failed": "AI analizi başarısız: {error}",
+        "ai_analyze_simulated": "AI'ya ulaşılamadı veya haber bulunamadı — analiz yapılamadı (nötr sonuç kaydedilmedi).",
+
+        # ---- risk profiles ----
+        "profile_title": "🎚️ Risk Profili",
+        "profile_help": "Tek tıkla hazır risk ayarı uygula. Strateji kalite filtreleri aynı kalır; yalnızca işlem başına risk ve portföy limitleri değişir.",
+        "profile_label": "Profil",
+        "profile_conservative": "🛡️ Temkinli",
+        "profile_balanced": "⚖️ Dengeli",
+        "profile_aggressive": "🚀 Agresif (Yüksek Getiri)",
+        "profile_apply": "Uygula",
+        "profile_applied": "✅ {profile} profili uygulandı.",
+        "profile_desc_conservative": "İşlem başına %0.75 risk, en fazla 4 pozisyon, %60 maks. yatırım. Küçük ama istikrarlı hedefler.",
+        "profile_desc_balanced": "İşlem başına %1 risk, 5 pozisyon, %80 maks. yatırım. Backtest'lerdeki referans ayar.",
+        "profile_desc_aggressive": "İşlem başına %1.5 risk (test edilen optimum), %4.5 günlük fren. Backtest'lerde en yüksek getiriyi veren ayar — daha fazla risk denendi ve getiriyi DÜŞÜRDÜĞÜ görüldü (volatilite kaybı + eşzamanlı stoplar).",
 
         # ---- password gate ----
         "password_title": "🔒 Sentix — Erişim Doğrulama",
@@ -243,6 +271,34 @@ T = {
         "app_title": "Sentix",
         "app_tagline": "AI-Powered Algorithmic Paper Trading",
         "lang_label": "🌐 Language",
+        "nav_title": "📑 Pages",
+
+        # ---- live mode ----
+        "live_mode_badge_on": "LIVE MODE ACTIVE",
+        "live_mode_badge_off": "Test mode (lenient data)",
+        "live_mode_label": "Live Mode (strict real-data mode)",
+        "live_mode_help": "When active the system only works with verified real data: AI failures raise errors and no fallback/simulated values are ever used. Recommended for realistic testing.",
+
+        # ---- manual AI analysis ----
+        "ai_analyze_btn": "🤖 Analyze with AI now",
+        "ai_analyze_running": "Fetching news and analyzing with Gemini...",
+        "ai_analyze_done": "✅ AI analysis complete. Sentiment score: {score}",
+        "ai_analyze_no_key": "No Gemini API key found. Add one under Settings → AI.",
+        "ai_analyze_failed": "AI analysis failed: {error}",
+        "ai_analyze_simulated": "AI unreachable or no news found — analysis not performed (no neutral result saved).",
+
+        # ---- risk profiles ----
+        "profile_title": "🎚️ Risk Profile",
+        "profile_help": "Apply a preset risk configuration in one click. Strategy quality filters stay identical; only per-trade risk and portfolio limits change.",
+        "profile_label": "Profile",
+        "profile_conservative": "🛡️ Conservative",
+        "profile_balanced": "⚖️ Balanced",
+        "profile_aggressive": "🚀 Aggressive (High Reward)",
+        "profile_apply": "Apply",
+        "profile_applied": "✅ {profile} profile applied.",
+        "profile_desc_conservative": "0.75% risk per trade, max 4 positions, 60% max invested. Small but steady targets.",
+        "profile_desc_balanced": "1% risk per trade, 5 positions, 80% max invested. The reference setting from the backtests.",
+        "profile_desc_aggressive": "1.5% risk per trade (the tested optimum), 4.5% daily brake. The highest-returning setting in backtests — pushing risk further was tested and LOWERED returns (volatility drag + simultaneous stop-outs).",
 
         # ---- password gate ----
         "password_title": "🔒 Sentix — Access Verification",

@@ -39,6 +39,31 @@ def parse_watchlist(raw: str):
     return out or list(DEFAULT_WATCHLIST)
 
 
+# One-click risk profiles (config-table keys -> values). Strategy quality
+# gates stay identical; profiles only scale how much is risked per signal.
+RISK_PROFILES = {
+    "conservative": {
+        "risk_per_trade_pct": "0.75", "max_open_positions": "4",
+        "max_position_pct": "15.0", "max_total_exposure_pct": "60.0",
+        "daily_loss_limit_pct": "2.0", "cooldown_hours": "36",
+    },
+    "balanced": {
+        "risk_per_trade_pct": "1.0", "max_open_positions": "5",
+        "max_position_pct": "20.0", "max_total_exposure_pct": "80.0",
+        "daily_loss_limit_pct": "3.0", "cooldown_hours": "24",
+    },
+    # Empirical note (2026-07 sweeps): risk >1.5%/trade with 95-100% exposure
+    # LOWERED returns and deepened drawdowns (volatility drag + correlated
+    # tech stop-outs). "Aggressive" is therefore the tested optimum, not the
+    # maximum the sliders allow.
+    "aggressive": {
+        "risk_per_trade_pct": "1.5", "max_open_positions": "5",
+        "max_position_pct": "20.0", "max_total_exposure_pct": "80.0",
+        "daily_loss_limit_pct": "4.5", "cooldown_hours": "24",
+    },
+}
+
+
 @dataclass
 class StrategyConfig:
     # --- entry / trend gates ---

@@ -14,7 +14,8 @@ from core.db import (
     get_equity_history, get_latest_signals, get_connection, log_event,
 )
 from core.accounting import calculate_nav, execute_buy, execute_sell
-from core.config import StrategyConfig, DEFAULT_WATCHLIST, parse_watchlist, normalize_symbol
+from core.config import (StrategyConfig, DEFAULT_WATCHLIST, RISK_PROFILES,
+                         parse_watchlist, normalize_symbol)
 from core.data_fetcher import fetch_ohlcv, fetch_realtime_price, fetch_asset_news
 from core.indicators import add_indicators
 from core.backtest import run_backtest, trades_to_frame
@@ -28,6 +29,26 @@ load_dotenv()
 
 INITIAL_CASH = 10000.0
 HEARTBEAT_STALE_SECONDS = 120
+
+
+# =========================================================================
+# Cached network fetches — auto-refresh reruns the script, so every
+# external call MUST be behind a TTL cache or it fires on every refresh.
+# =========================================================================
+
+@st.cache_data(ttl=900, show_spinner=False)
+def cached_news(asset: str, limit: int = 5):
+    return fetch_asset_news(asset, limit=limit)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cached_ohlcv(asset: str, timeframe: str, limit: int = 300):
+    return fetch_ohlcv(asset, timeframe, limit=limit)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def cached_price(asset: str):
+    return fetch_realtime_price(asset)
 
 
 # =========================================================================
@@ -95,7 +116,17 @@ def _check_password() -> bool:
 # Sidebar
 # =========================================================================
 
-def _render_sidebar():
+PAGES = [
+    ("portfolio", "tab_portfolio"),
+    ("signals", "tab_signals"),
+    ("charts", "tab_charts"),
+    ("backtest", "tab_backtest"),
+    ("settings", "tab_settings"),
+    ("logs", "tab_logs"),
+]
+
+
+def _render_sidebar() -> str:
     with st.sidebar:
         st.markdown(f"## 📈 {t('app_title')}")
         st.caption(t("app_tagline"))
@@ -108,6 +139,21 @@ def _render_sidebar():
             st.rerun()
 
         st.divider()
+
+        # ---- page navigation (single page renders per run) ----
+        page_ids = [p[0] for p in PAGES]
+        page = st.radio(t("nav_title"), page_ids,
+                        format_func=lambda pid: t(dict(PAGES)[pid]),
+                        key="nav_page")
+
+        st.divider()
+
+        # ---- live mode badge ----
+        live_mode = (get_config("live_mode", "false") or "false").lower() == "true"
+        if live_mode:
+            st.markdown(f"🔴 **{t('live_mode_badge_on')}**")
+        else:
+            st.markdown(f"🧪 {t('live_mode_badge_off')}")
 
         # ---- bot status ----
         st.markdown(f"**{t('sidebar_status_title')}**")
@@ -194,12 +240,15 @@ def _render_sidebar():
             pass
         st.caption(t("crypto_always_open"))
 
-    return nav, cash
+    return page
 
 
-def _maybe_autorefresh():
-    backtest_showing = st.session_state.bt_result is not None or st.session_state.bt_running
-    if st.session_state.auto_refresh and not backtest_showing:
+def _maybe_autorefresh(page: str):
+    # No auto-rerun while configuring settings or viewing backtest results —
+    # a rerun there would discard form state / recompute nothing useful.
+    if page in ("backtest", "settings"):
+        return
+    if st.session_state.auto_refresh:
         st_autorefresh(interval=st.session_state.refresh_interval * 1000, key="global_autorefresh")
 
 
@@ -235,7 +284,7 @@ def _live_prices_for(open_positions: list) -> dict:
         price = None
         if use_live:
             try:
-                price = fetch_realtime_price(asset)
+                price = cached_price(asset)
             except Exception:
                 price = None
         if price is None:
@@ -507,7 +556,7 @@ def _load_chart_frame(asset: str, timeframe: str):
     'timestamp' column, or None if no data is available at all."""
     df = None
     try:
-        df = fetch_ohlcv(asset, timeframe, limit=300)
+        df = cached_ohlcv(asset, timeframe, limit=300)
     except Exception:
         df = None
 
@@ -587,6 +636,24 @@ def render_charts_tab(cfg: StrategyConfig):
         col_ai, col_news = st.columns(2)
         with col_ai:
             st.markdown(f"**{t('ai_run_title')}**")
+
+            # On-demand manual AI analysis (news + technical context)
+            if st.button(t("ai_analyze_btn"), key="btn_ai_analyze"):
+                if not validate_api_key_for_start():
+                    st.warning(t("ai_analyze_no_key"))
+                else:
+                    with st.spinner(t("ai_analyze_running")):
+                        try:
+                            from ai.sentiment_analyzer import analyze_sentiment
+                            news_fresh = fetch_asset_news(asset, limit=10)
+                            res = analyze_sentiment(asset, news_fresh)
+                            if res.get("is_simulated"):
+                                st.warning(t("ai_analyze_simulated"))
+                            else:
+                                st.success(t("ai_analyze_done", score=res.get("sentiment_score")))
+                        except Exception as e:
+                            st.error(t("ai_analyze_failed", error=str(e)))
+
             try:
                 ai_run = get_latest_ai_run(asset)
             except Exception:
@@ -607,7 +674,7 @@ def render_charts_tab(cfg: StrategyConfig):
         with col_news:
             st.markdown(f"**{t('news_title')}**")
             try:
-                news = fetch_asset_news(asset, limit=5)
+                news = cached_news(asset, limit=5)
             except Exception:
                 news = []
             if not news:
@@ -770,6 +837,29 @@ def render_settings_tab(cfg: StrategyConfig):
             st.toast(t("settings_saved"))
 
     with st.expander(t("exp_risk")):
+        # ---- one-click risk profiles ----
+        st.markdown(f"**{t('profile_title')}**")
+        st.caption(t("profile_help"))
+        profile_labels = {
+            "conservative": t("profile_conservative"),
+            "balanced": t("profile_balanced"),
+            "aggressive": t("profile_aggressive"),
+        }
+        pcol1, pcol2 = st.columns([2, 1])
+        with pcol1:
+            profile_pick = st.selectbox(t("profile_label"), list(RISK_PROFILES.keys()),
+                                        index=2, format_func=lambda k: profile_labels[k],
+                                        key="settings_profile")
+        with pcol2:
+            st.write("")
+            if st.button(t("profile_apply"), key="apply_profile"):
+                for key, value in RISK_PROFILES[profile_pick].items():
+                    save_config(key, value)
+                st.success(t("profile_applied", profile=profile_labels[profile_pick]))
+                st.rerun()
+        st.caption(t(f"profile_desc_{profile_pick}"))
+        st.divider()
+
         risk_per_trade = st.slider(t("risk_per_trade"), 0.25, 3.0, float(cfg.risk_per_trade_pct), 0.25,
                                    key="settings_risk_per_trade")
         max_open = st.slider(t("max_open_positions"), 1, 10, int(cfg.max_open_positions), 1,
@@ -853,8 +943,12 @@ def render_settings_tab(cfg: StrategyConfig):
             interval_default = 300
         sim_interval = st.slider(t("simulation_interval_seconds"), 60, 3600, interval_default, 30,
                                  key="settings_sim_interval")
+        live_mode_now = (get_config("live_mode", "false") or "false").lower() == "true"
+        live_mode = st.checkbox(t("live_mode_label"), value=live_mode_now,
+                                help=t("live_mode_help"), key="settings_live_mode")
         if st.button(t("save_button"), key="save_system"):
             save_config("simulation_interval_seconds", sim_interval)
+            save_config("live_mode", "true" if live_mode else "false")
             st.success(t("settings_saved"))
             st.toast(t("settings_saved"))
 
@@ -979,24 +1073,22 @@ def main():
     except Exception:
         cfg = StrategyConfig()
 
-    _render_sidebar()
-    _maybe_autorefresh()
+    page = _render_sidebar()
+    _maybe_autorefresh(page)
 
-    tabs = st.tabs([
-        t("tab_portfolio"), t("tab_signals"), t("tab_charts"),
-        t("tab_backtest"), t("tab_settings"), t("tab_logs"),
-    ])
-    with tabs[0]:
+    # One page per run (st.tabs executed ALL tab bodies every rerun, which
+    # hammered yfinance/news on each auto-refresh and stacked the layout)
+    if page == "portfolio":
         render_portfolio_tab(cfg)
-    with tabs[1]:
+    elif page == "signals":
         render_signals_tab()
-    with tabs[2]:
+    elif page == "charts":
         render_charts_tab(cfg)
-    with tabs[3]:
+    elif page == "backtest":
         render_backtest_tab(cfg)
-    with tabs[4]:
+    elif page == "settings":
         render_settings_tab(cfg)
-    with tabs[5]:
+    else:
         render_logs_tab()
 
 
